@@ -62,6 +62,7 @@ from ..interventions.registry import InterventionRegistry
 from ..memory import MemoryManager, MemoryManagerConfig
 from ..models.bedrock import BedrockModel
 from ..models.model import Model, _ModelPlugin
+from ..models.routing import ModelRouter
 from ..plugins import Plugin
 from ..plugins.registry import _PluginRegistry
 from ..sandbox import Sandbox
@@ -160,7 +161,7 @@ class Agent(AgentBase):
 
     def __init__(
         self,
-        model: Model | str | None = None,
+        model: Model | str | ModelRouter | None = None,
         messages: Messages | None = None,
         tools: list[Union[str, dict[str, str], "ToolProvider", Any]] | None = None,
         system_prompt: str | list[SystemContentBlock] | None = None,
@@ -291,7 +292,17 @@ class Agent(AgentBase):
         Raises:
             ValueError: If agent id contains path separators.
         """
-        self.model = BedrockModel() if not model else BedrockModel(model_id=model) if isinstance(model, str) else model
+        # A ModelRouter installs per-call routing (registered as a plugin below); agent.model
+        # exposes its default concrete model so readers (tracing, count_tokens, etc.) still work.
+        self._model_router: ModelRouter | None = model if isinstance(model, ModelRouter) else None
+        if isinstance(model, ModelRouter):
+            self.model = model.default_model
+        elif not model:
+            self.model = BedrockModel()
+        elif isinstance(model, str):
+            self.model = BedrockModel(model_id=model)
+        else:
+            self.model = model
         self.messages = messages if messages is not None else []
         if sandbox is not None and not isinstance(sandbox, Sandbox):
             raise TypeError(f"sandbox must be a Sandbox instance or None, got {type(sandbox).__name__}")
@@ -477,6 +488,10 @@ class Agent(AgentBase):
 
         # Register built-in plugins
         self._plugin_registry.add_and_init(_ModelPlugin())
+
+        # A ModelRouter passed via model= is a plugin; register it so it can install routing.
+        if self._model_router is not None:
+            self._plugin_registry.add_and_init(self._model_router)
 
         plugins_to_register = resolved_plugins if resolved_plugins is not None else plugins
         if plugins_to_register:
