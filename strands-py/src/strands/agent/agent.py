@@ -416,6 +416,11 @@ class Agent(AgentBase):
         self.hooks = HookRegistry()
 
         self._middleware_registry = MiddlewareRegistry()
+        self._plugin_registry = _PluginRegistry(self)
+
+        # Input handlers preserve registration order, so initialize routing before capability middleware.
+        if self._model_router is not None:
+            self._plugin_registry.add_and_init(self._model_router)
 
         # In agentic mode, surface live token usage to the model so it can decide when to compress.
         if context_manager == "agentic":
@@ -423,8 +428,6 @@ class Agent(AgentBase):
             from .._middleware.stages import InvokeModelStage
 
             self._middleware_registry.add_middleware(InvokeModelStage.Input, create_token_usage_middleware())
-
-        self._plugin_registry = _PluginRegistry(self)
 
         self._interrupt_state = _InterruptState()
 
@@ -488,9 +491,6 @@ class Agent(AgentBase):
 
         # Register built-in plugins
         self._plugin_registry.add_and_init(_ModelPlugin())
-
-        if self._model_router is not None:
-            self._plugin_registry.add_and_init(self._model_router)
 
         plugins_to_register = resolved_plugins if resolved_plugins is not None else plugins
         if plugins_to_register:
