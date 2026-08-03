@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Union
 
+from ..._middleware.stages import InvokeModelStage
 from ...hooks.events import AfterInvocationEvent, AfterModelCallEvent
 from ...hooks.registry import HookOrder
 from ...plugins.plugin import Plugin
@@ -115,8 +116,6 @@ class ModelRouter(Plugin):
         """
         if agent._model_router is not self:
             raise ValueError("ModelRouter must be passed through Agent(model=...), not plugins=[...]")
-
-        from ..._middleware.stages import InvokeModelStage
 
         agent._middleware_registry.add_middleware(InvokeModelStage.Input, self._selection_middleware())
         # SDK_LAST makes fallback run after ModelRetryStrategy decides whether to retry.
