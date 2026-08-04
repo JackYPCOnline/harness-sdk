@@ -54,12 +54,11 @@ _ROUTING_KEY = "model_routing"
 class _RoutingState:
     """Per-invocation routing state stored under ``_ROUTING_KEY`` in ``invocation_state``.
 
-    ``router`` and ``agent_id`` scope the state to one router on one agent, so a shared
-    ``invocation_state`` (e.g. Graph/Swarm nodes) does not cross-contaminate selections.
+    ``router`` scopes the state to its owning router so a shared ``invocation_state`` (e.g. Graph
+    nodes running in parallel with different routers) does not read another router's selection.
     """
 
     router: ModelRouter
-    agent_id: str
     index: int
     model: Model
     tried: set[int]
@@ -159,7 +158,7 @@ class ModelRouter(Plugin):
         """Build an ``InvokeModelStage.Input`` handler that selects the per-invocation model."""
 
         async def middleware(context: InvokeModelContext) -> InvokeModelContext:
-            state = _owned_state(context.invocation_state.get(_ROUTING_KEY), self, context.agent.agent_id)
+            state = _owned_state(context.invocation_state.get(_ROUTING_KEY), self)
             if state is None:
                 routing_context = self._routing_context(
                     context.messages, context.system_prompt, context.tool_specs, context.invocation_state
@@ -168,7 +167,6 @@ class ModelRouter(Plugin):
                 index = self._index_of(candidate)
                 state = _RoutingState(
                     router=self,
-                    agent_id=context.agent.agent_id,
                     index=index,
                     model=await self._resolve(candidate, routing_context),
                     tried={index},
@@ -181,7 +179,7 @@ class ModelRouter(Plugin):
 
     async def _on_model_result(self, event: AfterModelCallEvent) -> None:
         """Re-arm the fallback chain on success; on an unretried failure, advance to the next candidate."""
-        state = _owned_state(event.invocation_state.get(_ROUTING_KEY), self, event.agent.agent_id)
+        state = _owned_state(event.invocation_state.get(_ROUTING_KEY), self)
         if state is None:
             return
         if event.stop_response is not None:
@@ -221,7 +219,7 @@ class ModelRouter(Plugin):
 
     async def _clear_state(self, event: AfterInvocationEvent) -> None:
         """Drop this router's routing state at the end of the invocation so it does not leak."""
-        if _owned_state(event.invocation_state.get(_ROUTING_KEY), self, event.agent.agent_id) is not None:
+        if _owned_state(event.invocation_state.get(_ROUTING_KEY), self) is not None:
             del event.invocation_state[_ROUTING_KEY]
 
     def _index_of(self, candidate: RoutingCandidate) -> int:
@@ -241,9 +239,9 @@ class ModelRouter(Plugin):
         )
 
 
-def _owned_state(value: object, router: ModelRouter, agent_id: str) -> _RoutingState | None:
-    """Return the routing state if it belongs to this router and agent."""
-    if isinstance(value, _RoutingState) and value.router is router and value.agent_id == agent_id:
+def _owned_state(value: object, router: ModelRouter) -> _RoutingState | None:
+    """Return the routing state if it belongs to this router."""
+    if isinstance(value, _RoutingState) and value.router is router:
         return value
     return None
 
