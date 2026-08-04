@@ -230,6 +230,12 @@ def test_duplicate_candidate_names_raise():
         ModelRouter(models=[RoutingCandidate(_model(), name="a"), RoutingCandidate(_model(), name="a")])
 
 
+def test_duplicate_candidate_instance_raises():
+    candidate = RoutingCandidate(_model())
+    with pytest.raises(ValueError, match="duplicate RoutingCandidate instance"):
+        ModelRouter(models=[candidate, candidate])
+
+
 def test_mapping_models_raises():
     with pytest.raises(TypeError, match="sequence of candidates"):
         ModelRouter(models={"cheap": _model()})

@@ -1,8 +1,8 @@
 """Integration tests for model routing over real Bedrock models.
 
 Ordered fallback is the routing behavior that only a real model surfaces: a real model failure
-triggers a real recovery, observable purely through the answer. Proactive selection (context-fit,
-first-candidate) is deterministic and covered by unit tests, so it is not re-tested here.
+triggers a real recovery, observable purely through the answer. Strategy selection (first-candidate)
+is deterministic and covered by unit tests, so it is not re-tested here.
 """
 
 import pytest
