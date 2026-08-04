@@ -61,7 +61,7 @@ class _RoutingState:
     router: ModelRouter
     index: int
     model: Model
-    tried: set[int]
+    tried_indices: set[int]
 
 
 class FallbackStrategy:
@@ -169,7 +169,7 @@ class ModelRouter(Plugin):
                     router=self,
                     index=index,
                     model=await self._resolve(candidate, routing_context),
-                    tried={index},
+                    tried_indices={index},
                 )
                 context.invocation_state[_ROUTING_KEY] = state
             context.model = state.model
@@ -183,12 +183,12 @@ class ModelRouter(Plugin):
         if state is None:
             return
         if event.stop_response is not None:
-            state.tried = {state.index}  # a successful call re-arms the rest of the chain
+            state.tried_indices = {state.index}  # a successful call re-arms the rest of the chain
             return
         if event.retry or event.exception is None:
             return
 
-        next_index = next((index for index in range(len(self._candidates)) if index not in state.tried), None)
+        next_index = next((index for index in range(len(self._candidates)) if index not in state.tried_indices), None)
         if next_index is None:
             return
 
@@ -213,7 +213,7 @@ class ModelRouter(Plugin):
         )
         state.model = model
         state.index = next_index
-        state.tried.add(next_index)
+        state.tried_indices.add(next_index)
         event.agent._retry_strategy.reset_retry_state()
         event.retry = True
 

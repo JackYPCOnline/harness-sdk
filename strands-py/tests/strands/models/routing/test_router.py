@@ -464,12 +464,12 @@ async def test_clear_state_removes_only_own_routing_state():
     router = ModelRouter(models=[_model()])
     other = ModelRouter(models=[_model()])
 
-    own = _RoutingState(router=router, index=0, model=_model(), tried={0})
+    own = _RoutingState(router=router, index=0, model=_model(), tried_indices={0})
     invocation_state = {_ROUTING_KEY: own}
     await router._clear_state(types.SimpleNamespace(invocation_state=invocation_state))
     assert _ROUTING_KEY not in invocation_state
 
-    foreign = _RoutingState(router=other, index=0, model=_model(), tried={0})
+    foreign = _RoutingState(router=other, index=0, model=_model(), tried_indices={0})
     invocation_state = {_ROUTING_KEY: foreign}
     await router._clear_state(types.SimpleNamespace(invocation_state=invocation_state))
     assert _ROUTING_KEY in invocation_state  # another router's state is left untouched
@@ -478,21 +478,21 @@ async def test_clear_state_removes_only_own_routing_state():
 @pytest.mark.asyncio
 async def test_successful_call_rearms_the_fallback_chain():
     router = ModelRouter(models=[_model(), _model(), _model()])
-    state = _RoutingState(router=router, index=1, model=_model(), tried={0, 1})
+    state = _RoutingState(router=router, index=1, model=_model(), tried_indices={0, 1})
     event = types.SimpleNamespace(
         retry=False, stop_response=object(), exception=None, invocation_state={_ROUTING_KEY: state}, agent=None
     )
 
     await router._on_model_result(event)
 
-    assert state.tried == {1}  # re-armed to the current selection so a later failure can fall over
+    assert state.tried_indices == {1}  # re-armed to the current selection so a later failure can fall over
 
 
 @pytest.mark.asyncio
 async def test_fallback_resolution_error_is_contained():
     router = ModelRouter(models=[_model(), RoutingCandidate(ModelRouter([_model()], strategy=_RaisingStrategy()))])
     agent = _agent_stub()
-    state = _RoutingState(router=router, index=0, model=_model(), tried={0})
+    state = _RoutingState(router=router, index=0, model=_model(), tried_indices={0})
     event = types.SimpleNamespace(
         retry=False,
         stop_response=None,
