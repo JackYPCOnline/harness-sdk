@@ -174,86 +174,60 @@ async def test_select_result_must_be_a_candidate():
 
 
 @pytest.mark.asyncio
-async def test_selection_middleware_sets_model_and_caches_per_invocation():
+async def test_selection_middleware_sets_model_and_caches_per_invocation_state():
     fast, smart = _model(), _model()
     strategy = _PickByName("smart")
     router = ModelRouter(
         models=[RoutingCandidate(fast, name="fast"), RoutingCandidate(smart, name="smart")], strategy=strategy
     )
     middleware = router._selection_middleware()
-    state: dict = {}
 
-    first = await middleware(_invoke_context(state, model=fast))
-    assert first.model is smart
+    # Same invocation_state: selects once, then reuses the cached model.
+    state: dict = {}
+    assert (await middleware(_invoke_context(state, model=fast))).model is smart
+    assert (await middleware(_invoke_context(state, model=fast))).model is smart
     assert strategy.calls == 1
 
-    second = await middleware(_invoke_context(state, model=fast))
-    assert second.model is smart
-    assert strategy.calls == 1  # reused from invocation_state, not re-selected
-
-
-@pytest.mark.asyncio
-async def test_selection_middleware_reselects_for_new_invocation_state():
-    fast, smart = _model(), _model()
-    strategy = _PickByName("smart")
-    router = ModelRouter(
-        models=[RoutingCandidate(fast, name="fast"), RoutingCandidate(smart, name="smart")], strategy=strategy
-    )
-    middleware = router._selection_middleware()
-
-    await middleware(_invoke_context({}, model=fast))
-    await middleware(_invoke_context({}, model=fast))
-
+    # A fresh invocation_state selects again.
+    assert (await middleware(_invoke_context({}, model=fast))).model is smart
     assert strategy.calls == 2
 
 
-# --- guards ---
+# --- construction guards ---
 
 
-def test_empty_models_raises():
-    with pytest.raises(ValueError, match="at least one"):
-        ModelRouter(models=[])
-
-
-def test_stateful_candidate_raises():
-    with pytest.raises(ValueError, match=r"StatefulModel.*stateful"):
-        ModelRouter(models=[StatefulModel([])])
-
-
-def test_stateful_candidate_error_uses_name_when_present():
-    with pytest.raises(ValueError, match=r"vip.*stateful"):
-        ModelRouter(models=[RoutingCandidate(StatefulModel([]), name="vip")])
-
-
-def test_duplicate_candidate_names_raise():
-    with pytest.raises(ValueError, match="duplicate"):
-        ModelRouter(models=[RoutingCandidate(_model(), name="a"), RoutingCandidate(_model(), name="a")])
-
-
-def test_duplicate_candidate_instance_raises():
-    candidate = RoutingCandidate(_model())
-    with pytest.raises(ValueError, match="duplicate RoutingCandidate instance"):
-        ModelRouter(models=[candidate, candidate])
-
-
-def test_mapping_models_raises():
-    with pytest.raises(TypeError, match="sequence of candidates"):
-        ModelRouter(models={"cheap": _model()})
-
-
-def test_bare_string_models_raises():
-    with pytest.raises(TypeError, match="sequence of candidates"):
-        ModelRouter(models="my-model-id")
-
-
-def test_string_candidate_is_rejected():
-    with pytest.raises(TypeError, match="candidate must be"):
-        ModelRouter(models=["my-model-id"])
-
-
-def test_invalid_candidate_raises():
-    with pytest.raises(TypeError, match="candidate must be"):
-        ModelRouter(models=[object()])
+@pytest.mark.parametrize(
+    ("make_models", "exc", "match"),
+    [
+        (lambda: [], ValueError, "at least one"),
+        (lambda: "my-model-id", TypeError, "sequence of candidates"),
+        (lambda: {"cheap": _model()}, TypeError, "sequence of candidates"),
+        (lambda: ["my-model-id"], TypeError, "candidate must be"),
+        (lambda: [object()], TypeError, "candidate must be"),
+        (lambda: [StatefulModel([])], ValueError, r"StatefulModel.*stateful"),
+        (lambda: [RoutingCandidate(StatefulModel([]), name="vip")], ValueError, r"vip.*stateful"),
+        (
+            lambda: [RoutingCandidate(_model(), name="a"), RoutingCandidate(_model(), name="a")],
+            ValueError,
+            "duplicate candidate name",
+        ),
+        (lambda: [RoutingCandidate(_model())] * 2, ValueError, "duplicate RoutingCandidate instance"),
+    ],
+    ids=[
+        "empty",
+        "bare-string",
+        "mapping",
+        "string-candidate",
+        "invalid-object",
+        "stateful",
+        "stateful-uses-name-in-error",
+        "duplicate-name",
+        "duplicate-instance",
+    ],
+)
+def test_construction_rejects_invalid_input(make_models, exc, match):
+    with pytest.raises(exc, match=match):
+        ModelRouter(models=make_models())
 
 
 # --- agent integration ---
@@ -384,21 +358,14 @@ def _agent_stub():
     )
 
 
-def test_fallback_advances_to_next_candidate_on_throttling():
-    failing = _FailingModel(ModelThrottledException("throttled"))
+@pytest.mark.parametrize(
+    "exception",
+    [ModelThrottledException("throttled"), ValueError("boom")],
+    ids=["retryable", "non-retryable"],
+)
+def test_fallback_advances_past_a_failing_candidate(exception):
     good = _model("recovered")
-    router = ModelRouter(models=[failing, good])
-    agent = Agent(model=router, retry_strategy=None, callback_handler=None)
-
-    result = agent("hello")
-
-    assert result.message["content"][0]["text"] == "recovered"
-
-
-def test_fallback_advances_on_non_retryable_error():
-    failing = _FailingModel(ValueError("boom"))
-    good = _model("recovered")
-    router = ModelRouter(models=[failing, good])
+    router = ModelRouter(models=[_FailingModel(exception), good])
     agent = Agent(model=router, retry_strategy=None, callback_handler=None)
 
     result = agent("hello")
