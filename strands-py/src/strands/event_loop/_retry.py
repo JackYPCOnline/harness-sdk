@@ -92,11 +92,7 @@ class ModelRetryStrategy(HookProvider):
         return min(delay, self._max_delay)
 
     def reset_retry_state(self) -> None:
-        """Reset retry state to initial values.
-
-        Public because ``ModelRouter`` ordered fallback calls it to give each candidate a fresh
-        retry budget when it advances; keep it exposed.
-        """
+        """Reset retry state to initial values."""
         self._current_attempt = 0
 
     async def _handle_after_invocation(self, event: AfterInvocationEvent) -> None:

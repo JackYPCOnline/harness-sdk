@@ -8,7 +8,7 @@ from strands import Agent, Plugin
 from strands.event_loop._retry import ModelRetryStrategy
 from strands.models import BedrockModel
 from strands.models.routing import ModelRouter, RoutingCandidate, RoutingContext, RoutingStrategy
-from strands.models.routing.router import _ROUTING_KEY
+from strands.models.routing.router import _ROUTING_KEY, _RoutingState
 from strands.types.exceptions import ModelThrottledException
 from tests.fixtures.mocked_model_provider import MockedModelProvider
 
@@ -465,12 +465,12 @@ async def test_clear_state_removes_only_own_routing_state():
     other = ModelRouter(models=[_model()])
     agent = object()
 
-    own = {"router": router, "agent": agent, "index": 0, "model": _model(), "tried": {0}}
+    own = _RoutingState(router=router, agent=agent, index=0, model=_model(), tried={0})
     invocation_state = {_ROUTING_KEY: own}
     await router._clear_state(types.SimpleNamespace(invocation_state=invocation_state, agent=agent))
     assert _ROUTING_KEY not in invocation_state
 
-    foreign = {"router": other, "agent": agent, "index": 0, "model": _model(), "tried": {0}}
+    foreign = _RoutingState(router=other, agent=agent, index=0, model=_model(), tried={0})
     invocation_state = {_ROUTING_KEY: foreign}
     await router._clear_state(types.SimpleNamespace(invocation_state=invocation_state, agent=agent))
     assert _ROUTING_KEY in invocation_state  # another router's state is left untouched
@@ -480,21 +480,21 @@ async def test_clear_state_removes_only_own_routing_state():
 async def test_successful_call_rearms_the_fallback_chain():
     router = ModelRouter(models=[_model(), _model(), _model()])
     agent = object()
-    state = {"router": router, "agent": agent, "index": 1, "model": _model(), "tried": {0, 1}}
+    state = _RoutingState(router=router, agent=agent, index=1, model=_model(), tried={0, 1})
     event = types.SimpleNamespace(
         retry=False, stop_response=object(), exception=None, invocation_state={_ROUTING_KEY: state}, agent=agent
     )
 
     await router._on_model_result(event)
 
-    assert state["tried"] == {1}  # re-armed to the current selection so a later failure can fall over
+    assert state.tried == {1}  # re-armed to the current selection so a later failure can fall over
 
 
 @pytest.mark.asyncio
 async def test_fallback_resolution_error_is_contained():
     router = ModelRouter(models=[_model(), RoutingCandidate(ModelRouter([_model()], strategy=_RaisingStrategy()))])
     agent = _agent_stub()
-    state = {"router": router, "agent": agent, "index": 0, "model": _model(), "tried": {0}}
+    state = _RoutingState(router=router, agent=agent, index=0, model=_model(), tried={0})
     event = types.SimpleNamespace(
         retry=False,
         stop_response=None,

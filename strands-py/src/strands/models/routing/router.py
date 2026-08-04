@@ -50,6 +50,17 @@ _ROUTER_PLUGIN_NAME = "strands:model-router"
 _ROUTING_KEY = "__strands_model_routing__"
 
 
+@dataclass
+class _RoutingState:
+    """Per-invocation routing state stored under ``_ROUTING_KEY`` in ``invocation_state``."""
+
+    router: ModelRouter
+    agent: Agent
+    index: int
+    model: Model
+    tried: set[int]
+
+
 class FallbackStrategy:
     """Selects the first candidate; the router advances through the rest on failure."""
 
@@ -151,15 +162,15 @@ class ModelRouter(Plugin):
                 )
                 candidate = await self._pick(routing_context)
                 index = self._index_of(candidate)
-                state = {
-                    "router": self,
-                    "agent": context.agent,
-                    "index": index,
-                    "model": await self._resolve(candidate, routing_context),
-                    "tried": {index},
-                }
+                state = _RoutingState(
+                    router=self,
+                    agent=context.agent,
+                    index=index,
+                    model=await self._resolve(candidate, routing_context),
+                    tried={index},
+                )
                 context.invocation_state[_ROUTING_KEY] = state
-            context.model = state["model"]
+            context.model = state.model
             return context
 
         return middleware
@@ -170,13 +181,12 @@ class ModelRouter(Plugin):
         if state is None:
             return
         if event.stop_response is not None:
-            state["tried"] = {state["index"]}  # a successful call re-arms the rest of the chain
+            state.tried = {state.index}  # a successful call re-arms the rest of the chain
             return
         if event.retry or event.exception is None:
             return
 
-        tried: set[int] = state["tried"]
-        next_index = next((index for index in range(len(self._candidates)) if index not in tried), None)
+        next_index = next((index for index in range(len(self._candidates)) if index not in state.tried), None)
         if next_index is None:
             return
 
@@ -195,20 +205,19 @@ class ModelRouter(Plugin):
 
         logger.info(
             "from_index=<%d>, to_index=<%d>, error=<%s> | model call failed, advancing to next candidate",
-            state["index"],
+            state.index,
             next_index,
             type(event.exception).__name__,
         )
-        state["model"] = model
-        state["index"] = next_index
-        tried.add(next_index)
+        state.model = model
+        state.index = next_index
+        state.tried.add(next_index)
         event.agent._retry_strategy.reset_retry_state()
         event.retry = True
 
     async def _clear_state(self, event: AfterInvocationEvent) -> None:
         """Drop this router's routing state at the end of the invocation so it does not leak."""
-        state = _owned_state(event.invocation_state.get(_ROUTING_KEY), self, event.agent)
-        if state is not None:
+        if _owned_state(event.invocation_state.get(_ROUTING_KEY), self, event.agent) is not None:
             del event.invocation_state[_ROUTING_KEY]
 
     def _index_of(self, candidate: RoutingCandidate) -> int:
@@ -228,16 +237,11 @@ class ModelRouter(Plugin):
         )
 
 
-def _owned_state(value: Any, router: ModelRouter, agent: Agent) -> dict[str, Any] | None:
-    """Return valid routing state owned by the given router and agent."""
-    if not isinstance(value, dict) or value.get("router") is not router or value.get("agent") is not agent:
-        return None
-    if not isinstance(value.get("index"), int) or not isinstance(value.get("model"), Model):
-        return None
-    tried = value.get("tried")
-    if not isinstance(tried, set) or not all(isinstance(index, int) for index in tried):
-        return None
-    return value
+def _owned_state(value: object, router: ModelRouter, agent: Agent) -> _RoutingState | None:
+    """Return the routing state if it belongs to this router and agent."""
+    if isinstance(value, _RoutingState) and value.router is router and value.agent is agent:
+        return value
+    return None
 
 
 def _normalize(models: object) -> tuple[RoutingCandidate, ...]:
