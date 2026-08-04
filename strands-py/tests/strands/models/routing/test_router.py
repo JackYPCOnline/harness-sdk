@@ -45,7 +45,7 @@ def _routing_context(candidates, invocation_state=None):
     )
 
 
-_TEST_AGENT = object()
+_TEST_AGENT = types.SimpleNamespace(agent_id="test-agent")
 
 
 def _invoke_context(invocation_state, model):
@@ -377,10 +377,13 @@ class _RaisingStrategy:
         raise RuntimeError("strategy boom")
 
 
-def _agent_stub():
+def _agent_stub(agent_id="stub-agent"):
     """A minimal stand-in for the fields the fallback hook reads off the agent."""
     return types.SimpleNamespace(
-        messages=[], system_prompt=None, tool_registry=types.SimpleNamespace(get_all_tool_specs=lambda: [])
+        agent_id=agent_id,
+        messages=[],
+        system_prompt=None,
+        tool_registry=types.SimpleNamespace(get_all_tool_specs=lambda: []),
     )
 
 
@@ -420,7 +423,7 @@ def test_fallback_exhausts_all_candidates_then_raises():
 async def test_advance_is_noop_without_routing_state():
     router = ModelRouter(models=[_model(), _model()])
     event = types.SimpleNamespace(
-        retry=False, stop_response=None, exception=ValueError("x"), invocation_state={}, agent=None
+        retry=False, stop_response=None, exception=ValueError("x"), invocation_state={}, agent=_agent_stub()
     )
 
     await router._on_model_result(event)
@@ -463,14 +466,14 @@ async def test_selection_middleware_reselects_when_state_belongs_to_another_rout
 async def test_clear_state_removes_only_own_routing_state():
     router = ModelRouter(models=[_model()])
     other = ModelRouter(models=[_model()])
-    agent = object()
+    agent = _agent_stub()
 
-    own = _RoutingState(router=router, agent=agent, index=0, model=_model(), tried={0})
+    own = _RoutingState(router=router, agent_id=agent.agent_id, index=0, model=_model(), tried={0})
     invocation_state = {_ROUTING_KEY: own}
     await router._clear_state(types.SimpleNamespace(invocation_state=invocation_state, agent=agent))
     assert _ROUTING_KEY not in invocation_state
 
-    foreign = _RoutingState(router=other, agent=agent, index=0, model=_model(), tried={0})
+    foreign = _RoutingState(router=other, agent_id=agent.agent_id, index=0, model=_model(), tried={0})
     invocation_state = {_ROUTING_KEY: foreign}
     await router._clear_state(types.SimpleNamespace(invocation_state=invocation_state, agent=agent))
     assert _ROUTING_KEY in invocation_state  # another router's state is left untouched
@@ -479,8 +482,8 @@ async def test_clear_state_removes_only_own_routing_state():
 @pytest.mark.asyncio
 async def test_successful_call_rearms_the_fallback_chain():
     router = ModelRouter(models=[_model(), _model(), _model()])
-    agent = object()
-    state = _RoutingState(router=router, agent=agent, index=1, model=_model(), tried={0, 1})
+    agent = _agent_stub()
+    state = _RoutingState(router=router, agent_id=agent.agent_id, index=1, model=_model(), tried={0, 1})
     event = types.SimpleNamespace(
         retry=False, stop_response=object(), exception=None, invocation_state={_ROUTING_KEY: state}, agent=agent
     )
@@ -494,7 +497,7 @@ async def test_successful_call_rearms_the_fallback_chain():
 async def test_fallback_resolution_error_is_contained():
     router = ModelRouter(models=[_model(), RoutingCandidate(ModelRouter([_model()], strategy=_RaisingStrategy()))])
     agent = _agent_stub()
-    state = _RoutingState(router=router, agent=agent, index=0, model=_model(), tried={0})
+    state = _RoutingState(router=router, agent_id=agent.agent_id, index=0, model=_model(), tried={0})
     event = types.SimpleNamespace(
         retry=False,
         stop_response=None,
