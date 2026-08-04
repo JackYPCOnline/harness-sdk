@@ -47,7 +47,7 @@ class RoutingCandidate:
 CandidateInput = Union[Model, "ModelRouter", RoutingCandidate]
 
 _ROUTER_PLUGIN_NAME = "strands:model-router"
-_ROUTING_KEY = "model_routing"
+_ROUTING_KEY = "strands:model_routing"
 
 
 @dataclass
@@ -188,34 +188,34 @@ class ModelRouter(Plugin):
         if event.retry or event.exception is None:
             return
 
-        next_index = next((index for index in range(len(self._candidates)) if index not in state.tried_indices), None)
-        if next_index is None:
-            return
-
         routing_context = self._routing_context(
             event.agent.messages,
             event.agent.system_prompt,
             event.agent.tool_registry.get_all_tool_specs(),
             event.invocation_state,
         )
-        try:
-            model = await self._resolve(self._candidates[next_index], routing_context)
-        except Exception as error:
-            # A failed advance must not replace the original model error or suppress ForceStopEvent.
-            logger.warning("candidate_index=<%d>, error=<%s> | fallback resolution failed", next_index, error)
+        for next_index in range(len(self._candidates)):
+            if next_index in state.tried_indices:
+                continue
+            state.tried_indices.add(next_index)
+            try:
+                model = await self._resolve(self._candidates[next_index], routing_context)
+            except Exception as error:
+                # A failed advance must not replace the original model error or suppress ForceStopEvent;
+                # skip this candidate and try the next untried one.
+                logger.warning("candidate_index=<%d>, error=<%s> | fallback resolution failed", next_index, error)
+                continue
+            logger.info(
+                "from_index=<%d>, to_index=<%d>, error=<%s> | model call failed, advancing to next candidate",
+                state.index,
+                next_index,
+                type(event.exception).__name__,
+            )
+            state.model = model
+            state.index = next_index
+            event.agent._retry_strategy.reset_retry_state()
+            event.retry = True
             return
-
-        logger.info(
-            "from_index=<%d>, to_index=<%d>, error=<%s> | model call failed, advancing to next candidate",
-            state.index,
-            next_index,
-            type(event.exception).__name__,
-        )
-        state.model = model
-        state.index = next_index
-        state.tried_indices.add(next_index)
-        event.agent._retry_strategy.reset_retry_state()
-        event.retry = True
 
     async def _clear_state(self, event: AfterInvocationEvent) -> None:
         """Drop this router's routing state at the end of the invocation so it does not leak."""

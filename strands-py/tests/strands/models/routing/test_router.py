@@ -442,6 +442,19 @@ async def test_clear_state_removes_only_own_routing_state():
     assert _ROUTING_KEY in invocation_state  # another router's state is left untouched
 
 
+def test_router_does_not_clobber_caller_invocation_state():
+    router = ModelRouter(models=[_model("ok")])
+    agent = Agent(model=router, callback_handler=None)
+    # The routing key is namespaced, so a caller value under "model_routing" is not touched.
+    state = {"model_routing": "caller-owned", "keep": 1}
+
+    agent("hi", invocation_state=state)
+
+    assert state["model_routing"] == "caller-owned"
+    assert state["keep"] == 1
+    assert _ROUTING_KEY not in state  # our own state was cleared at the end of the invocation
+
+
 @pytest.mark.asyncio
 async def test_successful_call_rearms_the_fallback_chain():
     router = ModelRouter(models=[_model(), _model(), _model()])
@@ -471,6 +484,18 @@ async def test_fallback_resolution_error_is_contained():
     await router._on_model_result(event)
 
     assert event.retry is False  # a failed advance degrades to "no fallback" instead of crashing
+
+
+def test_fallback_skips_an_unresolvable_candidate_and_reaches_a_healthy_one():
+    # [0] fails on call, [1] is a nested router whose strategy raises during resolution, [2] is
+    # healthy. A resolution failure on [1] must skip to [2], not abandon the chain.
+    unresolvable = RoutingCandidate(ModelRouter([_model()], strategy=_RaisingStrategy()))
+    router = ModelRouter(models=[_FailingModel(ValueError("primary down")), unresolvable, _model("healthy")])
+    agent = Agent(model=router, retry_strategy=None, callback_handler=None)
+
+    result = agent("hello")
+
+    assert result.message["content"][0]["text"] == "healthy"
 
 
 def test_nested_router_is_one_atomic_fallback_slot():

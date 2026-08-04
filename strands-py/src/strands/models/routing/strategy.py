@@ -28,6 +28,8 @@ class RoutingContext:
     system_prompt: SystemPrompt | None
     tool_specs: Sequence[ToolSpec]
     candidates: Sequence[RoutingCandidate]
+    # In a multi-agent run (e.g. Graph), one invocation_state is shared across nodes, so
+    # invocation_state["agent"] may be a sibling node rather than the routing agent.
     invocation_state: Mapping[str, Any]
 
 
