@@ -381,7 +381,10 @@ class _RaisingStrategy:
 def _agent_stub():
     """A minimal stand-in for the fields the fallback hook reads off the agent."""
     return types.SimpleNamespace(
-        messages=[], system_prompt=None, tool_registry=types.SimpleNamespace(get_all_tool_specs=lambda: [])
+        messages=[],
+        system_prompt=None,
+        tool_registry=types.SimpleNamespace(get_all_tool_specs=lambda: []),
+        _retry_strategy=ModelRetryStrategy(max_attempts=1),
     )
 
 
@@ -522,6 +525,52 @@ async def test_successful_call_rearms_the_fallback_chain():
     await router._on_model_result(event)
 
     assert state.tried_positions == {1}
+
+
+@pytest.mark.asyncio
+async def test_fallback_cycles_back_to_a_failed_candidate_in_the_next_round():
+    # Fallback is cyclic: a candidate that failed earlier in the invocation becomes eligible again
+    # after any successful call, so the route restarts from the most preferred candidate.
+    router = ModelRouter(models=[_model("first"), _model("second")])
+    agent = _agent_stub()
+    state = _RoutingState(
+        router=router,
+        route=router.candidates,
+        position=0,
+        model=router.candidates[0].model,
+        tried_positions={0},
+    )
+    invocation_state = {_ROUTING_KEY: state}
+
+    def failed_call():
+        return types.SimpleNamespace(
+            retry=False,
+            stop_response=None,
+            exception=ValueError("down"),
+            invocation_state=invocation_state,
+            agent=agent,
+        )
+
+    def successful_call():
+        return types.SimpleNamespace(
+            retry=False,
+            stop_response=object(),
+            exception=None,
+            invocation_state=invocation_state,
+            agent=agent,
+        )
+
+    await router._on_model_result(failed_call())
+    assert (state.position, state.model) == (1, router.candidates[1].model)
+
+    await router._on_model_result(successful_call())
+
+    # Round two: the current candidate fails and the router returns to the one that failed first.
+    event = failed_call()
+    await router._on_model_result(event)
+
+    assert (state.position, state.model) == (0, router.candidates[0].model)
+    assert event.retry is True
 
 
 @pytest.mark.asyncio

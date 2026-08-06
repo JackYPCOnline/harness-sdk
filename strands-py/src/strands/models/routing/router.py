@@ -3,9 +3,15 @@
 A router is a ``Plugin`` so an agent can accept it through ``model=``. Its ``RoutingStrategy``
 selects the candidates in preference order once per invocation, and the router routes across them:
 it caches that order, uses the most preferred candidate, and advances when a model fails and no hook
-has claimed the retry. Each candidate receives a fresh retry budget, and a successful call re-arms
-the remaining candidates. A nested ``ModelRouter`` is one atomic position: its own strategy chooses
-its model, while the outer router controls when to leave that position.
+has claimed the retry. Each candidate receives a fresh retry budget.
+
+Fallback is cyclic. Within a round the router advances through candidates it has not yet tried, and
+a successful call re-arms every other candidate, so a later failure restarts from the most preferred
+candidate even if that one already failed earlier in the invocation. A degraded call therefore does
+not pin the rest of the invocation to a less preferred model.
+
+A nested ``ModelRouter`` is one atomic position: its own strategy chooses its model, while the outer
+router controls when to leave that position.
 """
 
 from __future__ import annotations
@@ -50,7 +56,11 @@ _ROUTING_KEY = "strands:model_routing"
 
 @dataclass
 class _RoutingState:
-    """Per-invocation route execution state owned by one router."""
+    """Per-invocation route execution state owned by one router.
+
+    ``tried_positions`` covers the current fallback round only; a successful call collapses it to
+    the live position so the other candidates are eligible again.
+    """
 
     router: ModelRouter
     route: tuple[RoutingCandidate, ...]
@@ -184,7 +194,7 @@ class ModelRouter(Plugin):
         return middleware
 
     async def _on_model_result(self, event: AfterModelCallEvent) -> None:
-        """Re-arm the remaining candidates on success or advance after an unretried failure."""
+        """Start a new fallback round on success or advance within the current round after a failure."""
         state = _owned_state(event.invocation_state.get(_ROUTING_KEY), self)
         if state is None:
             return
