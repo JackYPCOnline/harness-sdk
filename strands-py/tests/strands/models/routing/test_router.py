@@ -1,5 +1,7 @@
 """Tests for ModelRouter core: candidate validation, strategy selection, guards."""
 
+import asyncio
+import contextlib
 import types
 
 import pytest
@@ -14,7 +16,8 @@ from strands.models.routing import (
     RoutingContext,
     RoutingStrategy,
 )
-from strands.models.routing.router import _ROUTING_KEY, _RoutingState
+from strands.models.routing.router import _RoutingState
+from strands.multiagent import GraphBuilder
 from strands.types.exceptions import ModelThrottledException
 from tests.fixtures.mocked_model_provider import MockedModelProvider
 
@@ -57,9 +60,9 @@ def _routing_context(candidates, invocation_state=None):
 _TEST_AGENT = object()
 
 
-def _invoke_context(invocation_state, model):
+def _invoke_context(invocation_state, model, agent=None):
     return types.SimpleNamespace(
-        agent=_TEST_AGENT,
+        agent=agent if agent is not None else _TEST_AGENT,
         messages=[],
         system_prompt=None,
         tool_specs=[],
@@ -172,29 +175,50 @@ def test_routing_strategy_protocol_is_runtime_checkable():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("invalid", "exc", "match"),
+    ("returns", "exc", "match"),
     [
-        ("not-a-sequence", TypeError, "sequence of candidates"),
-        ("empty", ValueError, "every candidate exactly once"),
-        ("duplicate", ValueError, "every candidate exactly once"),
-        ("foreign", ValueError, "every candidate exactly once"),
+        (lambda c: c[0], TypeError, "sequence of candidates; got RoutingCandidate"),
+        # A judge naming a candidate is the likeliest mistake, and str satisfies Sequence.
+        (lambda c: "cheap", TypeError, "sequence of candidates; got str"),
+        (lambda c: {"cheap": 1}, TypeError, "sequence of candidates; got dict"),
+        (lambda c: [c[0], RoutingCandidate(_model())], ValueError, "from context.candidates"),
     ],
+    ids=["single-candidate", "candidate-name-string", "mapping", "foreign-candidate"],
 )
-async def test_strategy_selection_must_contain_every_candidate_once(invalid, exc, match):
+async def test_strategy_selection_rejects_unusable_results(returns, exc, match):
     class _InvalidSelection:
         async def select(self, context):
-            if invalid == "not-a-sequence":
-                return context.candidates[0]
-            if invalid == "empty":
-                return []
-            if invalid == "duplicate":
-                return [context.candidates[0], context.candidates[0]]
-            return [context.candidates[0], RoutingCandidate(_model())]
+            return returns(context.candidates)
 
     router = ModelRouter(models=[_model(), _model()], strategy=_InvalidSelection())
 
     with pytest.raises(exc, match=match):
         await router._select_model(_routing_context(router.candidates))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("returned", "expected_order"),
+    [
+        (lambda c: [], [0, 1, 2]),
+        (lambda c: [c[2]], [2, 0, 1]),
+        (lambda c: [c[2], c[2], c[1]], [2, 1, 0]),
+        (lambda c: [c[1], c[0], c[2]], [1, 0, 2]),
+    ],
+    ids=["empty-keeps-declaration-order", "subset-is-completed", "duplicates-collapse", "full-permutation"],
+)
+async def test_route_always_covers_every_candidate(returned, expected_order):
+    # Fallback must be able to reach every candidate, so the router completes whatever the strategy
+    # returns rather than rejecting a partial preference.
+    class _PartialSelection:
+        async def select(self, context):
+            return returned(context.candidates)
+
+    router = ModelRouter(models=[_model(), _model(), _model()], strategy=_PartialSelection())
+
+    route = await router._plan(_routing_context(router.candidates))
+
+    assert route == tuple(router.candidates[index] for index in expected_order)
 
 
 # --- selection middleware ---
@@ -383,6 +407,7 @@ def _agent_stub():
     return types.SimpleNamespace(
         messages=[],
         system_prompt=None,
+        _system_prompt_content=None,
         tool_registry=types.SimpleNamespace(get_all_tool_specs=lambda: []),
         _retry_strategy=ModelRetryStrategy(max_attempts=1),
     )
@@ -462,64 +487,97 @@ def test_fallback_resets_retry_budget_so_next_candidate_gets_fresh_retries():
 
 
 @pytest.mark.asyncio
-async def test_selection_middleware_reselects_when_state_belongs_to_another_router():
+async def test_two_routers_on_one_agent_keep_separate_state():
     m_a, m_b = _model(), _model()
     router_a = ModelRouter(models=[m_a])
     router_b = ModelRouter(models=[m_b])
     shared: dict = {}
 
-    await router_a._selection_middleware()(_invoke_context(shared, model=None))
+    context_a = _invoke_context(shared, model=None)
+    await router_a._selection_middleware()(context_a)
     context_b = _invoke_context(shared, model=None)
     await router_b._selection_middleware()(context_b)
 
-    assert context_b.model is m_b  # router_b does not reuse router_a's cached selection
+    assert (context_a.model, context_b.model) == (m_a, m_b)
+    # Each router owns its own slot, so router_b's selection did not evict router_a's.
+    assert (await router_a._selection_middleware()(_invoke_context(shared, model=None))).model is m_a
 
 
 @pytest.mark.asyncio
-async def test_clear_state_removes_only_own_routing_state():
+async def test_two_agents_sharing_one_router_and_state_dict_route_independently():
+    # Graph hands one invocation_state to every node, so a shared router must not let one agent
+    # run on another agent's cached selection.
+    fast, smart = _model(), _model()
+    router = ModelRouter(
+        models=[RoutingCandidate(fast, name="fast"), RoutingCandidate(smart, name="smart")],
+        strategy=_PreferByName("smart"),
+    )
+    shared: dict = {}
+    agent_one, agent_two = object(), object()
+
+    context_one = _invoke_context(shared, model=None, agent=agent_one)
+    await router._selection_middleware()(context_one)
+    context_two = _invoke_context(shared, model=None, agent=agent_two)
+    await router._selection_middleware()(context_two)
+
+    assert (context_one.model, context_two.model) == (smart, smart)
+    # Two distinct slots, so neither agent can advance or clear the other's route.
+    assert len([key for key in shared if key.startswith("strands:model_routing")]) == 2
+
+    await router._clear_state(types.SimpleNamespace(invocation_state=shared, agent=agent_one))
+    assert [key for key in shared if key.startswith("strands:model_routing")] == [router._state_key(agent_two)]
+
+
+@pytest.mark.asyncio
+async def test_clear_state_removes_only_this_agents_routing_state():
     router = ModelRouter(models=[_model()])
-    other = ModelRouter(models=[_model()])
+    mine, theirs = object(), object()
+    invocation_state = {
+        router._state_key(mine): _RoutingState(
+            route=router.candidates, position=0, model=router.default_model, tried_positions={0}
+        ),
+        router._state_key(theirs): _RoutingState(
+            route=router.candidates, position=0, model=router.default_model, tried_positions={0}
+        ),
+    }
 
-    own = _RoutingState(
-        router=router, route=router.candidates, position=0, model=router.default_model, tried_positions={0}
-    )
-    invocation_state = {_ROUTING_KEY: own}
-    await router._clear_state(types.SimpleNamespace(invocation_state=invocation_state))
-    assert _ROUTING_KEY not in invocation_state
+    await router._clear_state(types.SimpleNamespace(invocation_state=invocation_state, agent=mine))
 
-    foreign = _RoutingState(
-        router=other, route=other.candidates, position=0, model=other.default_model, tried_positions={0}
-    )
-    invocation_state = {_ROUTING_KEY: foreign}
-    await router._clear_state(types.SimpleNamespace(invocation_state=invocation_state))
-    assert _ROUTING_KEY in invocation_state  # another router's state is left untouched
+    assert list(invocation_state) == [router._state_key(theirs)]
+
+    # An agent that never selected has nothing to clear.
+    await router._clear_state(types.SimpleNamespace(invocation_state=invocation_state, agent=object()))
+    assert list(invocation_state) == [router._state_key(theirs)]
 
 
 def test_router_does_not_clobber_caller_invocation_state():
     router = ModelRouter(models=[_model("ok")])
     agent = Agent(model=router, callback_handler=None)
-    # The routing key is namespaced, so a caller value under "model_routing" is not touched.
     state = {"model_routing": "caller-owned", "keep": 1}
 
     agent("hi", invocation_state=state)
 
     assert state["model_routing"] == "caller-owned"
     assert state["keep"] == 1
-    assert _ROUTING_KEY not in state  # our own state was cleared at the end of the invocation
+    # Routing state is cleared at the end of the invocation.
+    assert [key for key in state if key.startswith("strands:model_routing")] == []
 
 
 @pytest.mark.asyncio
 async def test_successful_call_rearms_the_fallback_chain():
     router = ModelRouter(models=[_model(), _model(), _model()])
     state = _RoutingState(
-        router=router,
         route=router.candidates,
         position=1,
         model=router.candidates[1].model,
         tried_positions={0, 1},
     )
     event = types.SimpleNamespace(
-        retry=False, stop_response=object(), exception=None, invocation_state={_ROUTING_KEY: state}, agent=None
+        retry=False,
+        stop_response=object(),
+        exception=None,
+        invocation_state={router._state_key(None): state},
+        agent=None,
     )
 
     await router._on_model_result(event)
@@ -534,13 +592,12 @@ async def test_fallback_cycles_back_to_a_failed_candidate_in_the_next_round():
     router = ModelRouter(models=[_model("first"), _model("second")])
     agent = _agent_stub()
     state = _RoutingState(
-        router=router,
         route=router.candidates,
         position=0,
         model=router.candidates[0].model,
         tried_positions={0},
     )
-    invocation_state = {_ROUTING_KEY: state}
+    invocation_state = {router._state_key(agent): state}
 
     def failed_call():
         return types.SimpleNamespace(
@@ -578,7 +635,6 @@ async def test_fallback_resolution_error_is_contained():
     router = ModelRouter(models=[_model(), RoutingCandidate(ModelRouter([_model()], strategy=_RaisingStrategy()))])
     agent = _agent_stub()
     state = _RoutingState(
-        router=router,
         route=router.candidates,
         position=0,
         model=router.default_model,
@@ -588,7 +644,7 @@ async def test_fallback_resolution_error_is_contained():
         retry=False,
         stop_response=None,
         exception=ValueError("original model error"),
-        invocation_state={_ROUTING_KEY: state},
+        invocation_state={router._state_key(agent): state},
         agent=agent,
     )
 
@@ -619,3 +675,66 @@ def test_nested_router_is_one_atomic_fallback_slot():
     # The nested router's first pick fails; the outer router falls over to its own next candidate
     # rather than trying the nested router's second model.
     assert result.message["content"][0]["text"] == "outer-other"
+
+
+class _RendezvousModel(MockedModelProvider):
+    """Waits until every node has reached its model call, so the invocations genuinely overlap.
+
+    Without this, Graph nodes finish one at a time and ``_clear_state`` removes the first node's
+    state before the second selects, hiding cross-node state bleed.
+    """
+
+    def __init__(self, text, rendezvous, participants):
+        super().__init__([{"role": "assistant", "content": [{"text": text}]} for _ in range(4)])
+        self._rendezvous = rendezvous
+        self._participants = participants
+        self.calls = 0
+
+    async def stream(self, *args, **kwargs):
+        self.calls += 1
+        self._rendezvous["arrived"] += 1
+        if self._rendezvous["arrived"] >= self._participants:
+            self._rendezvous["gate"].set()
+        with contextlib.suppress(asyncio.TimeoutError):
+            # A leak means one model is never reached, so the gate must not block forever.
+            await asyncio.wait_for(self._rendezvous["gate"].wait(), timeout=2)
+        async for event in super().stream(*args, **kwargs):
+            yield event
+
+
+@pytest.mark.asyncio
+async def test_parallel_graph_nodes_sharing_one_router_route_independently():
+    # Graph hands one invocation_state to every node, so a router attached to two agents must scope
+    # state by node as well: router identity alone lets one node run on another's selection.
+    rendezvous = {"arrived": 0, "gate": asyncio.Event()}
+    fast = _RendezvousModel("fast-done", rendezvous, participants=2)
+    smart = _RendezvousModel("smart-done", rendezvous, participants=2)
+
+    class _BySystemPrompt:
+        """Routes on the agent's own system prompt, never on invocation_state["agent"]."""
+
+        def __init__(self):
+            self.calls = 0
+
+        async def select(self, context):
+            self.calls += 1
+            prompt = context.system_prompt or ""
+            text = prompt if isinstance(prompt, str) else " ".join(b.get("text", "") for b in prompt)
+            wanted = "smart" if "smart" in text else "fast"
+            return [candidate for candidate in context.candidates if candidate.name == wanted]
+
+    strategy = _BySystemPrompt()
+    router = ModelRouter(
+        models=[RoutingCandidate(fast, name="fast"), RoutingCandidate(smart, name="smart")],
+        strategy=strategy,
+    )
+    builder = GraphBuilder()
+    builder.add_node(Agent(model=router, system_prompt="be fast", callback_handler=None), "fast_node")
+    builder.add_node(Agent(model=router, system_prompt="be smart", callback_handler=None), "smart_node")
+
+    result = await builder.build().invoke_async("go")
+
+    assert strategy.calls == 2  # both nodes consulted the strategy
+    assert (fast.calls, smart.calls) == (1, 1)  # neither node ran on the other's model
+    texts = {node_id: node.result.message["content"][0]["text"] for node_id, node in result.results.items()}
+    assert texts == {"fast_node": "fast-done", "smart_node": "smart-done"}

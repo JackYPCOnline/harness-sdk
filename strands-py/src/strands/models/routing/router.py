@@ -16,6 +16,7 @@ router controls when to leave that position.
 
 from __future__ import annotations
 
+import copy
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -51,18 +52,17 @@ class RoutingCandidate:
 CandidateInput = Union[Model, "ModelRouter", RoutingCandidate]
 
 _ROUTER_PLUGIN_NAME = "strands:model-router"
-_ROUTING_KEY = "strands:model_routing"
+_ROUTING_KEY_PREFIX = "strands:model_routing"
 
 
 @dataclass
 class _RoutingState:
-    """Per-invocation route execution state owned by one router.
+    """Per-invocation route execution state for one agent/router pair.
 
     ``tried_positions`` covers the current fallback round only; a successful call collapses it to
     the live position so the other candidates are eligible again.
     """
 
-    router: ModelRouter
     route: tuple[RoutingCandidate, ...]
     position: int
     model: Model
@@ -87,8 +87,8 @@ class ModelRouter(Plugin):
             models: Candidates as a sequence. Each is a ``Model``, a nested ``ModelRouter``, or a
                 ``RoutingCandidate`` carrying an optional name/description. The first candidate is
                 the router's concrete default.
-            strategy: Selects every candidate in preference order for each invocation. Defaults to
-                ``FallbackStrategy``, which preserves declaration order.
+            strategy: Orders candidates by preference for each invocation, and may return only the
+                ones it cares about. Defaults to ``FallbackStrategy``, which keeps declaration order.
 
         Raises:
             TypeError: If ``models`` is not a sequence, a candidate is not a ``Model`` or
@@ -143,20 +143,29 @@ class ModelRouter(Plugin):
         agent.hooks.add_callback(AfterInvocationEvent, self._clear_state, order=HookOrder.MODEL_ROUTING)
 
     async def _plan(self, context: RoutingContext) -> tuple[RoutingCandidate, ...]:
-        """Build and validate the strategy's preference order."""
-        result = await self._strategy.select(context)
-        if not isinstance(result, Sequence):
-            raise TypeError("strategy.select must return a sequence of candidates")
+        """Order candidates by strategy preference, appending any it left out in declaration order.
 
-        route = tuple(result)
+        Completing the route keeps every candidate reachable by fallback, so a strategy may return
+        only the candidates it cares about.
+        """
+        preferred: object = await self._strategy.select(context)
+        # str/bytes/Mapping satisfy Sequence but are never a candidate order; naming a candidate is
+        # the likeliest mistake, so report it as the type error it is.
+        if isinstance(preferred, (str, bytes, Mapping)) or not isinstance(preferred, Sequence):
+            raise TypeError(f"strategy.select must return a sequence of candidates; got {type(preferred).__name__}")
+
         configured_ids = {id(candidate) for candidate in context.candidates}
-        if (
-            len(route) != len(context.candidates)
-            or len({id(candidate) for candidate in route}) != len(route)
-            or any(id(candidate) not in configured_ids for candidate in route)
-        ):
-            raise ValueError("strategy.select must return every candidate exactly once")
-        return route
+        route: list[RoutingCandidate] = []
+        ranked_ids: set[int] = set()
+        for candidate in preferred:
+            if id(candidate) not in configured_ids:
+                raise ValueError("strategy.select must return candidates from context.candidates")
+            if id(candidate) not in ranked_ids:
+                ranked_ids.add(id(candidate))
+                route.append(candidate)
+
+        route.extend(candidate for candidate in context.candidates if id(candidate) not in ranked_ids)
+        return tuple(route)
 
     async def _resolve(self, candidate: RoutingCandidate, context: RoutingContext) -> Model:
         """Resolve a candidate to a concrete model, recursing into a nested router's selection."""
@@ -174,20 +183,20 @@ class ModelRouter(Plugin):
         """Build an ``InvokeModelStage.Input`` handler that applies the per-invocation selection."""
 
         async def middleware(context: InvokeModelContext) -> InvokeModelContext:
-            state = _owned_state(context.invocation_state.get(_ROUTING_KEY), self)
+            key = self._state_key(context.agent)
+            state = _routing_state(context.invocation_state, key)
             if state is None:
                 routing_context = self._routing_context(
                     context.messages, context.system_prompt, context.tool_specs, context.invocation_state
                 )
                 route = await self._plan(routing_context)
                 state = _RoutingState(
-                    router=self,
                     route=route,
                     position=0,
                     model=await self._resolve(route[0], routing_context),
                     tried_positions={0},
                 )
-                context.invocation_state[_ROUTING_KEY] = state
+                context.invocation_state[key] = state
             context.model = state.model
             return context
 
@@ -195,7 +204,7 @@ class ModelRouter(Plugin):
 
     async def _on_model_result(self, event: AfterModelCallEvent) -> None:
         """Start a new fallback round on success or advance within the current round after a failure."""
-        state = _owned_state(event.invocation_state.get(_ROUTING_KEY), self)
+        state = _routing_state(event.invocation_state, self._state_key(event.agent))
         if state is None:
             return
         if event.stop_response is not None:
@@ -204,12 +213,7 @@ class ModelRouter(Plugin):
         if event.retry or event.exception is None:
             return
 
-        routing_context = self._routing_context(
-            event.agent.messages,
-            event.agent.system_prompt,
-            event.agent.tool_registry.get_all_tool_specs(),
-            event.invocation_state,
-        )
+        routing_context = self._agent_routing_context(event.agent, event.invocation_state)
         for next_position, candidate in enumerate(state.route):
             if next_position in state.tried_positions:
                 continue
@@ -240,9 +244,30 @@ class ModelRouter(Plugin):
             return
 
     async def _clear_state(self, event: AfterInvocationEvent) -> None:
-        """Drop this router's state at the end of the invocation."""
-        if _owned_state(event.invocation_state.get(_ROUTING_KEY), self) is not None:
-            del event.invocation_state[_ROUTING_KEY]
+        """Drop this agent's routing state at the end of the invocation."""
+        key = self._state_key(event.agent)
+        if _routing_state(event.invocation_state, key) is not None:
+            del event.invocation_state[key]
+
+    def _state_key(self, agent: object) -> str:
+        """Scope routing state to one agent/router pair.
+
+        One ``invocation_state`` can serve several agents (parallel Graph nodes) and one router can
+        be attached to several agents, so neither identity alone is a sufficient key.
+        """
+        return f"{_ROUTING_KEY_PREFIX}:{id(agent):x}:{id(self):x}"
+
+    def _agent_routing_context(self, agent: Any, invocation_state: Mapping[str, Any]) -> RoutingContext:
+        """Build a ``RoutingContext`` from the agent, matching the shapes middleware passes."""
+        system_prompt = (
+            agent._system_prompt_content if agent._system_prompt_content is not None else agent.system_prompt
+        )
+        return self._routing_context(
+            copy.deepcopy(agent.messages),
+            copy.deepcopy(system_prompt),
+            agent.tool_registry.get_all_tool_specs(),
+            invocation_state,
+        )
 
     def _routing_context(
         self, messages: Any, system_prompt: Any, tool_specs: Any, invocation_state: Mapping[str, Any]
@@ -262,11 +287,10 @@ def _candidate_label(candidate: RoutingCandidate) -> str:
     return candidate.name or type(candidate.model).__name__
 
 
-def _owned_state(value: object, router: ModelRouter) -> _RoutingState | None:
-    """Return the routing state if it belongs to this router."""
-    if isinstance(value, _RoutingState) and value.router is router:
-        return value
-    return None
+def _routing_state(invocation_state: Mapping[str, Any], key: str) -> _RoutingState | None:
+    """Return the routing state stored under ``key``, ignoring any foreign value."""
+    value = invocation_state.get(key)
+    return value if isinstance(value, _RoutingState) else None
 
 
 def _normalize(models: object) -> tuple[RoutingCandidate, ...]:

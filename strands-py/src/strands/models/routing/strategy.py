@@ -36,5 +36,9 @@ class RoutingStrategy(Protocol):
     """Selects candidates for an invocation, most preferred first."""
 
     async def select(self, context: RoutingContext, **kwargs: Any) -> Sequence[RoutingCandidate]:
-        """Return every candidate exactly once, in preference order."""
+        """Return candidates from ``context.candidates`` in preference order.
+
+        Returning a subset is allowed; the router appends the rest in declaration order so fallback
+        can still reach every candidate.
+        """
         ...
