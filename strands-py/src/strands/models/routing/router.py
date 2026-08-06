@@ -1,19 +1,21 @@
 """ModelRouter: a reusable, immutable set of candidate models with a routing strategy.
 
-A router is a ``Plugin`` so an agent can accept it through ``model=``. Its ``RoutingStrategy``
-selects the candidates in preference order once per invocation, and the router routes across them:
-it caches that order, uses the most preferred candidate, and advances when a model fails and no hook
-has claimed the retry. Each candidate receives a fresh retry budget.
+A router is a ``Plugin`` so an agent can accept it through ``model=``. Its ``RoutingStrategy`` runs
+once per invocation and returns the candidates to use, most preferred first. That sequence is both
+the selection and the fallback plan: the router uses its first entry and advances through the rest
+when a model fails and no hook has claimed the retry, giving each a fresh retry budget.
 
-Fallback is cyclic. Within a round the router advances through candidates it has not yet tried, and
-a successful call re-arms every other candidate, so a later failure restarts from the most preferred
-candidate even if that one already failed earlier in the invocation. A degraded call therefore does
-not pin the rest of the invocation to a less preferred model.
+**The strategy therefore decides whether fallback happens at all.** The default ``FallbackStrategy``
+returns every candidate in declaration order, so ``ModelRouter(models=[a, b])`` gives ordered
+failover. A strategy that returns a single candidate gets no fallback, which is what a quality-driven
+strategy wants: if a judge routed a hard task to a frontier model, quietly answering it with a
+cheaper one would defeat the routing decision rather than rescue it.
 
-Candidates that failed during the invocation are demoted rather than excluded: fallback tries the
-fewest-failed candidates first, so a model that keeps failing sinks below the healthy ones instead
-of being re-probed with a fresh retry budget every round. It stays reachable, and a success clears
-its record, so a recovered model returns to full preference.
+Within the route, fallback is cyclic: a successful call re-arms the other entries, so a later failure
+can return to a more preferred model instead of pinning the rest of the invocation to a degraded one.
+Entries that failed are demoted rather than excluded, so fallback tries the fewest-failed first and a
+model that stays down sinks below the healthy ones instead of being re-probed with a fresh retry
+budget every round. A success clears that record.
 
 A nested ``ModelRouter`` is one atomic position: its own strategy chooses its model, while the outer
 router controls when to leave that position.
@@ -79,10 +81,10 @@ class _RoutingState:
 
 
 class FallbackStrategy:
-    """Selects candidates in declaration order."""
+    """Routes every candidate in declaration order, so the whole list is a failover chain."""
 
     async def select(self, context: RoutingContext, **kwargs: Any) -> Sequence[RoutingCandidate]:
-        """Return candidates in declaration order."""
+        """Return every candidate in declaration order."""
         return context.candidates
 
 
@@ -96,8 +98,9 @@ class ModelRouter(Plugin):
             models: Candidates as a sequence. Each is a ``Model``, a nested ``ModelRouter``, or a
                 ``RoutingCandidate`` carrying an optional name/description. The first candidate is
                 the router's concrete default.
-            strategy: Orders candidates by preference for each invocation, and may return only the
-                ones it cares about. Defaults to ``FallbackStrategy``, which keeps declaration order.
+            strategy: Chooses the candidates for each invocation, most preferred first; that
+                sequence is also the fallback chain, so returning one candidate disables fallback.
+                Defaults to ``FallbackStrategy``, which returns all of them in declaration order.
 
         Raises:
             TypeError: If ``models`` is not a sequence, a candidate is not a ``Model`` or
@@ -153,28 +156,29 @@ class ModelRouter(Plugin):
         agent.hooks.add_callback(AfterInvocationEvent, self._clear_state, order=HookOrder.SDK_LAST)
 
     async def _plan(self, context: RoutingContext) -> tuple[RoutingCandidate, ...]:
-        """Order candidates by strategy preference, appending any it left out in declaration order.
+        """Validate the strategy's route, which is exactly the candidates it returned.
 
-        Completing the route keeps every candidate reachable by fallback, so a strategy may return
-        only the candidates it cares about.
+        The route is not completed with the candidates the strategy left out: the returned sequence
+        is the fallback plan, so omitting a candidate means "do not fail over to it".
         """
-        preferred: object = await self._strategy.select(context)
+        selected: object = await self._strategy.select(context)
         # str/bytes/Mapping satisfy Sequence but are never a candidate order; naming a candidate is
         # the likeliest mistake, so report it as the type error it is.
-        if isinstance(preferred, (str, bytes, Mapping)) or not isinstance(preferred, Sequence):
-            raise TypeError(f"strategy.select must return a sequence of candidates; got {type(preferred).__name__}")
+        if isinstance(selected, (str, bytes, Mapping)) or not isinstance(selected, Sequence):
+            raise TypeError(f"strategy.select must return a sequence of candidates; got {type(selected).__name__}")
 
         configured_ids = {id(candidate) for candidate in context.candidates}
         route: list[RoutingCandidate] = []
-        ranked_ids: set[int] = set()
-        for candidate in preferred:
+        seen_ids: set[int] = set()
+        for candidate in selected:
             if id(candidate) not in configured_ids:
                 raise ValueError("strategy.select must return candidates from context.candidates")
-            if id(candidate) not in ranked_ids:
-                ranked_ids.add(id(candidate))
+            if id(candidate) not in seen_ids:
+                seen_ids.add(id(candidate))
                 route.append(candidate)
 
-        route.extend(candidate for candidate in context.candidates if id(candidate) not in ranked_ids)
+        if not route:
+            raise ValueError("strategy.select must return at least one candidate")
         return tuple(route)
 
     async def _resolve(self, candidate: RoutingCandidate, context: RoutingContext) -> Model:
@@ -218,8 +222,10 @@ class ModelRouter(Plugin):
         if state is None:
             return
         if event.stop_response is not None:
+            # Re-arm the rest of the route, and clear this entry's failures so an earlier outage
+            # stops demoting a model that is now working.
             state.tried_positions = {state.position}
-            state.failure_counts.pop(state.position, None)  # it works now; stop demoting it
+            state.failure_counts.pop(state.position, None)
             return
         if event.retry or event.exception is None:
             return

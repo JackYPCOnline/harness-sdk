@@ -182,8 +182,9 @@ def test_routing_strategy_protocol_is_runtime_checkable():
         (lambda c: "cheap", TypeError, "sequence of candidates; got str"),
         (lambda c: {"cheap": 1}, TypeError, "sequence of candidates; got dict"),
         (lambda c: [c[0], RoutingCandidate(_model())], ValueError, "from context.candidates"),
+        (lambda c: [], ValueError, "at least one candidate"),
     ],
-    ids=["single-candidate", "candidate-name-string", "mapping", "foreign-candidate"],
+    ids=["bare-candidate", "candidate-name-string", "mapping", "foreign-candidate", "empty"],
 )
 async def test_strategy_selection_rejects_unusable_results(returns, exc, match):
     class _InvalidSelection:
@@ -200,16 +201,16 @@ async def test_strategy_selection_rejects_unusable_results(returns, exc, match):
 @pytest.mark.parametrize(
     ("returned", "expected_order"),
     [
-        (lambda c: [], [0, 1, 2]),
-        (lambda c: [c[2]], [2, 0, 1]),
-        (lambda c: [c[2], c[2], c[1]], [2, 1, 0]),
+        (lambda c: [c[2]], [2]),
+        (lambda c: [c[2], c[0]], [2, 0]),
+        (lambda c: [c[2], c[2], c[1]], [2, 1]),
         (lambda c: [c[1], c[0], c[2]], [1, 0, 2]),
     ],
-    ids=["empty-keeps-declaration-order", "subset-is-completed", "duplicates-collapse", "full-permutation"],
+    ids=["single-candidate", "subset-is-kept-as-is", "duplicates-collapse", "full-permutation"],
 )
-async def test_route_always_covers_every_candidate(returned, expected_order):
-    # Fallback must be able to reach every candidate, so the router completes whatever the strategy
-    # returns rather than rejecting a partial preference.
+async def test_route_is_exactly_what_the_strategy_returned(returned, expected_order):
+    # The route doubles as the fallback chain, so omitted candidates stay omitted: completing it
+    # would force failover onto a strategy that deliberately chose one model.
     class _PartialSelection:
         async def select(self, context):
             return returned(context.candidates)
@@ -219,6 +220,50 @@ async def test_route_always_covers_every_candidate(returned, expected_order):
     route = await router._plan(_routing_context(router.candidates))
 
     assert route == tuple(router.candidates[index] for index in expected_order)
+
+
+def test_single_candidate_strategy_gets_no_fallback():
+    # A quality-driven strategy that picks one model must fail rather than silently answer with a
+    # different one, so the error surfaces instead of a healthy candidate rescuing the call.
+    chosen = _FailingModel(ValueError("chosen model down"))
+    healthy = _model("should-not-be-used")
+
+    class _PickChosen:
+        async def select(self, context):
+            return [next(c for c in context.candidates if c.name == "chosen")]
+
+    router = ModelRouter(
+        models=[RoutingCandidate(chosen, name="chosen"), RoutingCandidate(healthy, name="healthy")],
+        strategy=_PickChosen(),
+    )
+    agent = Agent(model=router, retry_strategy=None, callback_handler=None)
+
+    with pytest.raises(ValueError, match="chosen model down"):
+        agent("hello")
+
+
+def test_fallback_is_limited_to_the_candidates_the_strategy_returned():
+    excluded = _model("excluded")
+    primary = _FailingModel(ValueError("primary down"))
+    permitted = _model("permitted")
+
+    class _ExcludeFirst:
+        async def select(self, context):
+            return [c for c in context.candidates if c.name != "excluded"]
+
+    router = ModelRouter(
+        models=[
+            RoutingCandidate(excluded, name="excluded"),
+            RoutingCandidate(primary, name="primary"),
+            RoutingCandidate(permitted, name="permitted"),
+        ],
+        strategy=_ExcludeFirst(),
+    )
+    agent = Agent(model=router, retry_strategy=None, callback_handler=None)
+
+    result = agent("hello")
+
+    assert result.message["content"][0]["text"] == "permitted"
 
 
 # --- selection middleware ---

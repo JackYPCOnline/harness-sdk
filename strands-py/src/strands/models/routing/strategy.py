@@ -1,7 +1,8 @@
 """Routing strategy protocol and the context passed to it.
 
-A ``RoutingStrategy`` selects the router's candidates in preference order once per invocation, given
-the call's messages, system prompt, tool specs, and invocation state.
+A ``RoutingStrategy`` runs once per invocation, given the call's messages, system prompt, tool specs,
+and invocation state, and returns the candidates to use in preference order. That sequence doubles as
+the fallback chain, so the strategy controls whether failover happens at all.
 """
 
 from __future__ import annotations
@@ -36,9 +37,10 @@ class RoutingStrategy(Protocol):
     """Selects candidates for an invocation, most preferred first."""
 
     async def select(self, context: RoutingContext, **kwargs: Any) -> Sequence[RoutingCandidate]:
-        """Return candidates from ``context.candidates`` in preference order.
+        """Return the candidates to use, from ``context.candidates``, most preferred first.
 
-        Returning a subset is allowed; the router appends the rest in declaration order so fallback
-        can still reach every candidate.
+        The returned sequence is also the fallback chain: the router uses the first entry and
+        advances through the rest on failure. Omitting a candidate excludes it from fallback, so
+        returning a single candidate means the invocation fails rather than switching models.
         """
         ...
