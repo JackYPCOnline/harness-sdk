@@ -7,7 +7,13 @@ import pytest
 from strands import Agent, Plugin
 from strands.event_loop._retry import ModelRetryStrategy
 from strands.models import BedrockModel
-from strands.models.routing import ModelRouter, RoutingCandidate, RoutingContext, RoutingStrategy
+from strands.models.routing import (
+    FallbackStrategy,
+    ModelRouter,
+    RoutingCandidate,
+    RoutingContext,
+    RoutingStrategy,
+)
 from strands.models.routing.router import _ROUTING_KEY, _RoutingState
 from strands.types.exceptions import ModelThrottledException
 from tests.fixtures.mocked_model_provider import MockedModelProvider
@@ -23,16 +29,19 @@ def _model(text="hi"):
     return MockedModelProvider([{"role": "assistant", "content": [{"text": text}]}])
 
 
-class _PickByName:
-    """Strategy that selects the candidate with a given name and counts its calls."""
+class _PreferByName:
+    """Strategy that puts named candidates first and counts its calls."""
 
-    def __init__(self, name):
-        self.name = name
+    def __init__(self, *names):
+        self.names = names
         self.calls = 0
 
     async def select(self, context):
         self.calls += 1
-        return next(candidate for candidate in context.candidates if candidate.name == self.name)
+        by_name = {candidate.name: candidate for candidate in context.candidates}
+        prioritized = tuple(by_name[name] for name in self.names)
+        prioritized_ids = {id(candidate) for candidate in prioritized}
+        return prioritized + tuple(c for c in context.candidates if id(c) not in prioritized_ids)
 
 
 def _routing_context(candidates, invocation_state=None):
@@ -116,19 +125,21 @@ def test_nested_router_default_resolves_recursively():
 
 
 @pytest.mark.asyncio
-async def test_select_model_defaults_to_first_candidate():
-    m0, m1 = _model(), _model()
-    router = ModelRouter(models=[m0, m1])
+async def test_fallback_strategy_selects_in_declaration_order():
+    router = ModelRouter(models=[_model(), _model()])
 
-    assert await router._select_model(_routing_context(router.candidates)) is m0
+    selected = await FallbackStrategy().select(_routing_context(router.candidates))
+
+    assert tuple(selected) == router.candidates
+    assert await router._select_model(_routing_context(router.candidates)) is router.candidates[0].model
 
 
 @pytest.mark.asyncio
-async def test_custom_strategy_selects_named_candidate():
+async def test_custom_strategy_prefers_named_candidate():
     fast, smart = _model(), _model()
     router = ModelRouter(
         models=[RoutingCandidate(fast, name="fast"), RoutingCandidate(smart, name="smart")],
-        strategy=_PickByName("smart"),
+        strategy=_PreferByName("smart"),
     )
 
     assert await router._select_model(_routing_context(router.candidates)) is smart
@@ -139,11 +150,11 @@ async def test_selection_recurses_into_nested_router_strategy():
     inner_fast, inner_smart = _model(), _model()
     inner = ModelRouter(
         models=[RoutingCandidate(inner_fast, name="if"), RoutingCandidate(inner_smart, name="is")],
-        strategy=_PickByName("is"),
+        strategy=_PreferByName("is"),
     )
     outer = ModelRouter(
         models=[_model(), RoutingCandidate(inner, name="inner")],
-        strategy=_PickByName("inner"),
+        strategy=_PreferByName("inner"),
     )
 
     assert await outer._select_model(_routing_context(outer.candidates)) is inner_smart
@@ -155,18 +166,34 @@ def test_non_strategy_raises():
 
 
 def test_routing_strategy_protocol_is_runtime_checkable():
-    assert isinstance(_PickByName("x"), RoutingStrategy)
+    assert isinstance(_PreferByName("x"), RoutingStrategy)
     assert not isinstance(object(), RoutingStrategy)
 
 
 @pytest.mark.asyncio
-async def test_select_result_must_be_a_candidate():
-    class _Rogue:
+@pytest.mark.parametrize(
+    ("invalid", "exc", "match"),
+    [
+        ("not-a-sequence", TypeError, "sequence of candidates"),
+        ("empty", ValueError, "every candidate exactly once"),
+        ("duplicate", ValueError, "every candidate exactly once"),
+        ("foreign", ValueError, "every candidate exactly once"),
+    ],
+)
+async def test_strategy_selection_must_contain_every_candidate_once(invalid, exc, match):
+    class _InvalidSelection:
         async def select(self, context):
-            return RoutingCandidate(_model())  # a fresh candidate, not one of context.candidates
+            if invalid == "not-a-sequence":
+                return context.candidates[0]
+            if invalid == "empty":
+                return []
+            if invalid == "duplicate":
+                return [context.candidates[0], context.candidates[0]]
+            return [context.candidates[0], RoutingCandidate(_model())]
 
-    router = ModelRouter(models=[_model()], strategy=_Rogue())
-    with pytest.raises(ValueError, match="one of the candidates"):
+    router = ModelRouter(models=[_model(), _model()], strategy=_InvalidSelection())
+
+    with pytest.raises(exc, match=match):
         await router._select_model(_routing_context(router.candidates))
 
 
@@ -176,7 +203,7 @@ async def test_select_result_must_be_a_candidate():
 @pytest.mark.asyncio
 async def test_selection_middleware_sets_model_and_caches_per_invocation_state():
     fast, smart = _model(), _model()
-    strategy = _PickByName("smart")
+    strategy = _PreferByName("smart")
     router = ModelRouter(
         models=[RoutingCandidate(fast, name="fast"), RoutingCandidate(smart, name="smart")], strategy=strategy
     )
@@ -269,7 +296,7 @@ def test_agent_routes_to_strategy_selected_candidate():
     smart = _model("smart-says")
     router = ModelRouter(
         models=[RoutingCandidate(fast, name="fast"), RoutingCandidate(smart, name="smart")],
-        strategy=_PickByName("smart"),
+        strategy=_PreferByName("smart"),
     )
     agent = Agent(model=router, callback_handler=None)
 
@@ -304,7 +331,7 @@ def test_routing_runs_before_other_input_middleware():
     smart = _model("s")
     router = ModelRouter(
         models=[RoutingCandidate(fast, name="fast"), RoutingCandidate(smart, name="smart")],
-        strategy=_PickByName("smart"),
+        strategy=_PreferByName("smart"),
     )
     probe = _ModelProbe()
     agent = Agent(model=router, plugins=[probe], callback_handler=None)
@@ -345,7 +372,7 @@ class _FlakyModel(MockedModelProvider):
 
 
 class _RaisingStrategy:
-    """A strategy whose select always raises, to exercise fallback-resolution error containment."""
+    """A strategy whose select always raises, to exercise resolution error containment."""
 
     async def select(self, context, **kwargs):
         raise RuntimeError("strategy boom")
@@ -371,6 +398,25 @@ def test_fallback_advances_past_a_failing_candidate(exception):
     result = agent("hello")
 
     assert result.message["content"][0]["text"] == "recovered"
+
+
+def test_strategy_controls_both_initial_choice_and_fallback_order():
+    declared_first = _model("declared-first")
+    prioritized = _FailingModel(ValueError("priority failed"))
+    fallback = _model("strategy-fallback")
+    router = ModelRouter(
+        models=[
+            RoutingCandidate(declared_first, name="declared-first"),
+            RoutingCandidate(prioritized, name="priority"),
+            RoutingCandidate(fallback, name="fallback"),
+        ],
+        strategy=_PreferByName("priority", "fallback"),
+    )
+    agent = Agent(model=router, retry_strategy=None, callback_handler=None)
+
+    result = agent("hello")
+
+    assert result.message["content"][0]["text"] == "strategy-fallback"
 
 
 def test_fallback_exhausts_all_candidates_then_raises():
@@ -431,12 +477,16 @@ async def test_clear_state_removes_only_own_routing_state():
     router = ModelRouter(models=[_model()])
     other = ModelRouter(models=[_model()])
 
-    own = _RoutingState(router=router, index=0, model=_model(), tried_indices={0})
+    own = _RoutingState(
+        router=router, route=router.candidates, position=0, model=router.default_model, tried_positions={0}
+    )
     invocation_state = {_ROUTING_KEY: own}
     await router._clear_state(types.SimpleNamespace(invocation_state=invocation_state))
     assert _ROUTING_KEY not in invocation_state
 
-    foreign = _RoutingState(router=other, index=0, model=_model(), tried_indices={0})
+    foreign = _RoutingState(
+        router=other, route=other.candidates, position=0, model=other.default_model, tried_positions={0}
+    )
     invocation_state = {_ROUTING_KEY: foreign}
     await router._clear_state(types.SimpleNamespace(invocation_state=invocation_state))
     assert _ROUTING_KEY in invocation_state  # another router's state is left untouched
@@ -458,21 +508,33 @@ def test_router_does_not_clobber_caller_invocation_state():
 @pytest.mark.asyncio
 async def test_successful_call_rearms_the_fallback_chain():
     router = ModelRouter(models=[_model(), _model(), _model()])
-    state = _RoutingState(router=router, index=1, model=_model(), tried_indices={0, 1})
+    state = _RoutingState(
+        router=router,
+        route=router.candidates,
+        position=1,
+        model=router.candidates[1].model,
+        tried_positions={0, 1},
+    )
     event = types.SimpleNamespace(
         retry=False, stop_response=object(), exception=None, invocation_state={_ROUTING_KEY: state}, agent=None
     )
 
     await router._on_model_result(event)
 
-    assert state.tried_indices == {1}  # re-armed to the current selection so a later failure can fall over
+    assert state.tried_positions == {1}
 
 
 @pytest.mark.asyncio
 async def test_fallback_resolution_error_is_contained():
     router = ModelRouter(models=[_model(), RoutingCandidate(ModelRouter([_model()], strategy=_RaisingStrategy()))])
     agent = _agent_stub()
-    state = _RoutingState(router=router, index=0, model=_model(), tried_indices={0})
+    state = _RoutingState(
+        router=router,
+        route=router.candidates,
+        position=0,
+        model=router.default_model,
+        tried_positions={0},
+    )
     event = types.SimpleNamespace(
         retry=False,
         stop_response=None,

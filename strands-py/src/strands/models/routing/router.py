@@ -1,13 +1,11 @@
 """ModelRouter: a reusable, immutable set of candidate models with a routing strategy.
 
-A router holds an ordered sequence of candidates and is a ``Plugin`` so an agent can accept it
-through ``model=``. Its ``RoutingStrategy`` selects a candidate once per agent invocation; the
-choice is cached and reused for every model call in that invocation, including tool-loop turns.
-When the selected model fails and no hook has claimed the retry, the router advances to the next
-untried candidate in declaration order (ordered fallback), re-arming the chain after any successful
-call. Each candidate receives a fresh model retry budget. A nested ``ModelRouter`` candidate is one
-atomic fallback slot: its own strategy chooses its model, but the outer router does not fall back
-among the nested candidates.
+A router is a ``Plugin`` so an agent can accept it through ``model=``. Its ``RoutingStrategy``
+selects the candidates in preference order once per invocation, and the router routes across them:
+it caches that order, uses the most preferred candidate, and advances when a model fails and no hook
+has claimed the retry. Each candidate receives a fresh retry budget, and a successful call re-arms
+the remaining candidates. A nested ``ModelRouter`` is one atomic position: its own strategy chooses
+its model, while the outer router controls when to leave that position.
 """
 
 from __future__ import annotations
@@ -35,8 +33,8 @@ logger = logging.getLogger(__name__)
 class RoutingCandidate:
     """A routing candidate: a model with an optional name and description.
 
-    ``model`` may be a nested ``ModelRouter``; in a fallback chain it is one atomic slot (its own
-    strategy picks its model, and the outer router does not fall back among the nested candidates).
+    ``model`` may be a nested ``ModelRouter``; it is then one atomic position whose own strategy
+    chooses the concrete model.
     """
 
     model: Model | ModelRouter
@@ -52,28 +50,25 @@ _ROUTING_KEY = "strands:model_routing"
 
 @dataclass
 class _RoutingState:
-    """Per-invocation routing state stored under ``_ROUTING_KEY`` in ``invocation_state``.
-
-    ``router`` scopes the state to its owning router so a shared ``invocation_state`` (e.g. Graph
-    nodes running in parallel with different routers) does not read another router's selection.
-    """
+    """Per-invocation route execution state owned by one router."""
 
     router: ModelRouter
-    index: int
+    route: tuple[RoutingCandidate, ...]
+    position: int
     model: Model
-    tried_indices: set[int]
+    tried_positions: set[int]
 
 
 class FallbackStrategy:
-    """Selects the first candidate; the router advances through the rest on failure."""
+    """Selects candidates in declaration order."""
 
-    async def select(self, context: RoutingContext, **kwargs: Any) -> RoutingCandidate:
-        """Return the first candidate."""
-        return context.candidates[0]
+    async def select(self, context: RoutingContext, **kwargs: Any) -> Sequence[RoutingCandidate]:
+        """Return candidates in declaration order."""
+        return context.candidates
 
 
 class ModelRouter(Plugin):
-    """A reusable, ordered set of candidate models with a routing strategy and ordered fallback."""
+    """A reusable set of candidate models routed in strategy-defined preference order."""
 
     def __init__(self, models: Sequence[CandidateInput], *, strategy: RoutingStrategy | None = None) -> None:
         """Initialize the router.
@@ -81,8 +76,9 @@ class ModelRouter(Plugin):
         Args:
             models: Candidates as a sequence. Each is a ``Model``, a nested ``ModelRouter``, or a
                 ``RoutingCandidate`` carrying an optional name/description. The first candidate is
-                the router's default.
-            strategy: Selects a candidate per invocation. Defaults to selecting the first candidate.
+                the router's concrete default.
+            strategy: Selects every candidate in preference order for each invocation. Defaults to
+                ``FallbackStrategy``, which preserves declaration order.
 
         Raises:
             TypeError: If ``models`` is not a sequence, a candidate is not a ``Model`` or
@@ -113,7 +109,7 @@ class ModelRouter(Plugin):
 
     @property
     def default_model(self) -> Model:
-        """The first candidate resolved to a concrete model, recursing nested routers."""
+        """The first declared candidate resolved to a concrete model."""
         model = self._candidates[0].model
         if isinstance(model, ModelRouter):
             return model.default_model
@@ -132,30 +128,40 @@ class ModelRouter(Plugin):
             raise ValueError("ModelRouter must be passed through Agent(model=...), not plugins=[...]")
 
         agent._middleware_registry.add_middleware(InvokeModelStage.Input, self._selection_middleware())
-        # SDK_LAST makes fallback run after ModelRetryStrategy decides whether to retry.
-        agent.hooks.add_callback(AfterModelCallEvent, self._on_model_result, order=HookOrder.SDK_LAST)
-        agent.hooks.add_callback(AfterInvocationEvent, self._clear_state, order=HookOrder.SDK_LAST)
+        # MODEL_ROUTING runs after default-order retry decisions and before SDK_LAST.
+        agent.hooks.add_callback(AfterModelCallEvent, self._on_model_result, order=HookOrder.MODEL_ROUTING)
+        agent.hooks.add_callback(AfterInvocationEvent, self._clear_state, order=HookOrder.MODEL_ROUTING)
 
-    async def _pick(self, context: RoutingContext) -> RoutingCandidate:
-        """Select a candidate via the strategy, requiring the result to be one of the candidates."""
-        candidate = await self._strategy.select(context)
-        if not any(candidate is existing for existing in context.candidates):
-            raise ValueError("strategy.select must return one of the candidates")
-        return candidate
+    async def _plan(self, context: RoutingContext) -> tuple[RoutingCandidate, ...]:
+        """Build and validate the strategy's preference order."""
+        result = await self._strategy.select(context)
+        if not isinstance(result, Sequence):
+            raise TypeError("strategy.select must return a sequence of candidates")
+
+        route = tuple(result)
+        configured_ids = {id(candidate) for candidate in context.candidates}
+        if (
+            len(route) != len(context.candidates)
+            or len({id(candidate) for candidate in route}) != len(route)
+            or any(id(candidate) not in configured_ids for candidate in route)
+        ):
+            raise ValueError("strategy.select must return every candidate exactly once")
+        return route
 
     async def _resolve(self, candidate: RoutingCandidate, context: RoutingContext) -> Model:
-        """Resolve a candidate to a concrete model, recursing into a nested router's strategy."""
+        """Resolve a candidate to a concrete model, recursing into a nested router's selection."""
         model = candidate.model
         if isinstance(model, ModelRouter):
             return await model._select_model(replace(context, candidates=model.candidates))
         return model
 
     async def _select_model(self, context: RoutingContext) -> Model:
-        """Select and resolve a candidate to a concrete model."""
-        return await self._resolve(await self._pick(context), context)
+        """Resolve the strategy's most preferred candidate."""
+        route = await self._plan(context)
+        return await self._resolve(route[0], context)
 
     def _selection_middleware(self) -> Callable[[InvokeModelContext], Awaitable[InvokeModelContext]]:
-        """Build an ``InvokeModelStage.Input`` handler that selects the per-invocation model."""
+        """Build an ``InvokeModelStage.Input`` handler that applies the per-invocation selection."""
 
         async def middleware(context: InvokeModelContext) -> InvokeModelContext:
             state = _owned_state(context.invocation_state.get(_ROUTING_KEY), self)
@@ -163,13 +169,13 @@ class ModelRouter(Plugin):
                 routing_context = self._routing_context(
                     context.messages, context.system_prompt, context.tool_specs, context.invocation_state
                 )
-                candidate = await self._pick(routing_context)
-                index = self._index_of(candidate)
+                route = await self._plan(routing_context)
                 state = _RoutingState(
                     router=self,
-                    index=index,
-                    model=await self._resolve(candidate, routing_context),
-                    tried_indices={index},
+                    route=route,
+                    position=0,
+                    model=await self._resolve(route[0], routing_context),
+                    tried_positions={0},
                 )
                 context.invocation_state[_ROUTING_KEY] = state
             context.model = state.model
@@ -178,12 +184,12 @@ class ModelRouter(Plugin):
         return middleware
 
     async def _on_model_result(self, event: AfterModelCallEvent) -> None:
-        """Re-arm the fallback chain on success; on an unretried failure, advance to the next candidate."""
+        """Re-arm the remaining candidates on success or advance after an unretried failure."""
         state = _owned_state(event.invocation_state.get(_ROUTING_KEY), self)
         if state is None:
             return
         if event.stop_response is not None:
-            state.tried_indices = {state.index}  # a successful call re-arms the rest of the chain
+            state.tried_positions = {state.position}
             return
         if event.retry or event.exception is None:
             return
@@ -194,37 +200,39 @@ class ModelRouter(Plugin):
             event.agent.tool_registry.get_all_tool_specs(),
             event.invocation_state,
         )
-        for next_index in range(len(self._candidates)):
-            if next_index in state.tried_indices:
+        for next_position, candidate in enumerate(state.route):
+            if next_position in state.tried_positions:
                 continue
-            state.tried_indices.add(next_index)
+            state.tried_positions.add(next_position)
             try:
-                model = await self._resolve(self._candidates[next_index], routing_context)
+                model = await self._resolve(candidate, routing_context)
             except Exception as error:
-                # A failed advance must not replace the original model error or suppress ForceStopEvent;
-                # skip this candidate and try the next untried one.
-                logger.warning("candidate_index=<%d>, error=<%s> | fallback resolution failed", next_index, error)
+                # Preserve the model error and continue through the remaining candidates.
+                logger.warning(
+                    "candidate=<%s>, position=<%d>, error=<%s> | fallback resolution failed",
+                    _candidate_label(candidate),
+                    next_position,
+                    error,
+                )
                 continue
+
+            current = state.route[state.position]
             logger.info(
-                "from_index=<%d>, to_index=<%d>, error=<%s> | model call failed, advancing to next candidate",
-                state.index,
-                next_index,
+                "from_candidate=<%s>, to_candidate=<%s>, error=<%s> | model call failed, advancing candidate",
+                _candidate_label(current),
+                _candidate_label(candidate),
                 type(event.exception).__name__,
             )
             state.model = model
-            state.index = next_index
-            event.agent._retry_strategy.reset_retry_state()
+            state.position = next_position
+            event.agent._retry_strategy._reset_retry_state()
             event.retry = True
             return
 
     async def _clear_state(self, event: AfterInvocationEvent) -> None:
-        """Drop this router's routing state at the end of the invocation so it does not leak."""
+        """Drop this router's state at the end of the invocation."""
         if _owned_state(event.invocation_state.get(_ROUTING_KEY), self) is not None:
             del event.invocation_state[_ROUTING_KEY]
-
-    def _index_of(self, candidate: RoutingCandidate) -> int:
-        """Return the declaration-order index of a candidate by identity."""
-        return next(index for index, existing in enumerate(self._candidates) if existing is candidate)
 
     def _routing_context(
         self, messages: Any, system_prompt: Any, tool_specs: Any, invocation_state: Mapping[str, Any]
@@ -237,6 +245,11 @@ class ModelRouter(Plugin):
             candidates=self._candidates,
             invocation_state=invocation_state,
         )
+
+
+def _candidate_label(candidate: RoutingCandidate) -> str:
+    """Return a stable human-readable label for logs."""
+    return candidate.name or type(candidate.model).__name__
 
 
 def _owned_state(value: object, router: ModelRouter) -> _RoutingState | None:

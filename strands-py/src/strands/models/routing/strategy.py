@@ -1,7 +1,7 @@
 """Routing strategy protocol and the context passed to it.
 
-A ``RoutingStrategy`` picks one candidate per invocation from the router's candidates, given the
-call's messages, system prompt, tool specs, and invocation state.
+A ``RoutingStrategy`` selects the router's candidates in preference order once per invocation, given
+the call's messages, system prompt, tool specs, and invocation state.
 """
 
 from __future__ import annotations
@@ -18,25 +18,23 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class RoutingContext:
-    """Read-only inputs a strategy sees when selecting a candidate.
+    """Read-only inputs a strategy sees when selecting candidates.
 
-    The collections are shared by reference and must not be mutated; a strategy reads them to make
-    its decision and returns one of ``candidates``.
+    The collections are shared by reference and must not be mutated. In a multi-agent run, one
+    ``invocation_state`` may be shared across nodes, so its ``"agent"`` value may identify a sibling.
     """
 
     messages: Messages
     system_prompt: SystemPrompt | None
     tool_specs: Sequence[ToolSpec]
     candidates: Sequence[RoutingCandidate]
-    # In a multi-agent run (e.g. Graph), one invocation_state is shared across nodes, so
-    # invocation_state["agent"] may be a sibling node rather than the routing agent.
     invocation_state: Mapping[str, Any]
 
 
 @runtime_checkable
 class RoutingStrategy(Protocol):
-    """Selects one candidate for an invocation."""
+    """Selects candidates for an invocation, most preferred first."""
 
-    async def select(self, context: RoutingContext, **kwargs: Any) -> RoutingCandidate:
-        """Return the candidate to use, which must be one of ``context.candidates``."""
+    async def select(self, context: RoutingContext, **kwargs: Any) -> Sequence[RoutingCandidate]:
+        """Return every candidate exactly once, in preference order."""
         ...
