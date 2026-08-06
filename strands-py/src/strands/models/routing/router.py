@@ -147,9 +147,10 @@ class ModelRouter(Plugin):
             raise ValueError("ModelRouter must be passed through Agent(model=...), not plugins=[...]")
 
         agent._middleware_registry.add_middleware(InvokeModelStage.Input, self._selection_middleware())
-        # MODEL_ROUTING runs after default-order retry decisions and before SDK_LAST.
+        # Fallback must see whether ModelRetryStrategy (DEFAULT) already claimed the retry.
         agent.hooks.add_callback(AfterModelCallEvent, self._on_model_result, order=HookOrder.MODEL_ROUTING)
-        agent.hooks.add_callback(AfterInvocationEvent, self._clear_state, order=HookOrder.MODEL_ROUTING)
+        # Teardown runs last so other end-of-invocation callbacks still observe the selection.
+        agent.hooks.add_callback(AfterInvocationEvent, self._clear_state, order=HookOrder.SDK_LAST)
 
     async def _plan(self, context: RoutingContext) -> tuple[RoutingCandidate, ...]:
         """Order candidates by strategy preference, appending any it left out in declaration order.
