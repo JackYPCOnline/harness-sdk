@@ -268,25 +268,19 @@ def _normalize(models: object) -> tuple[RoutingCandidate, ...]:
 
 def _as_candidate(item: CandidateInput) -> RoutingCandidate:
     """Wrap a candidate input in a ``RoutingCandidate``, validating its model type."""
-    if isinstance(item, RoutingCandidate):
-        _validate_candidate_model(item.model)
-        return item
-    return RoutingCandidate(model=_validate_candidate_model(item))
-
-
-def _validate_candidate_model(model: object) -> Model | ModelRouter:
-    """Return the model if it is a ``Model`` or ``ModelRouter``; reject other types."""
-    if isinstance(model, (Model, ModelRouter)):
-        return model
-    raise TypeError(f"candidate must be a Model or ModelRouter; got {type(model).__name__}")
+    candidate = item if isinstance(item, RoutingCandidate) else RoutingCandidate(model=item)
+    if not isinstance(candidate.model, (Model, ModelRouter)):
+        raise TypeError(f"candidate must be a Model or ModelRouter; got {type(candidate.model).__name__}")
+    return candidate
 
 
 def _reject_stateful(candidates: tuple[RoutingCandidate, ...]) -> None:
     """Reject any stateful candidate model."""
     for candidate in candidates:
         if isinstance(candidate.model, Model) and candidate.model.stateful:
-            label = candidate.name or type(candidate.model).__name__
-            raise ValueError(f"candidate=<{label}> is stateful; routing among stateful models is not supported")
+            raise ValueError(
+                f"candidate=<{_candidate_label(candidate)}> is stateful; routing among stateful models is not supported"
+            )
 
 
 def _reject_duplicates(candidates: tuple[RoutingCandidate, ...]) -> None:
