@@ -10,6 +10,11 @@ a successful call re-arms every other candidate, so a later failure restarts fro
 candidate even if that one already failed earlier in the invocation. A degraded call therefore does
 not pin the rest of the invocation to a less preferred model.
 
+Candidates that failed during the invocation are demoted rather than excluded: fallback tries the
+fewest-failed candidates first, so a model that keeps failing sinks below the healthy ones instead
+of being re-probed with a fresh retry budget every round. It stays reachable, and a success clears
+its record, so a recovered model returns to full preference.
+
 A nested ``ModelRouter`` is one atomic position: its own strategy chooses its model, while the outer
 router controls when to leave that position.
 """
@@ -19,7 +24,7 @@ from __future__ import annotations
 import copy
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Union
 
 from ..._middleware.stages import InvokeModelStage
@@ -60,13 +65,17 @@ class _RoutingState:
     """Per-invocation route execution state for one agent/router pair.
 
     ``tried_positions`` covers the current fallback round only; a successful call collapses it to
-    the live position so the other candidates are eligible again.
+    the live position so the other candidates are eligible again. ``failure_counts`` spans the whole
+    invocation and only demotes: candidates are tried fewest-failures first, so a long tool loop
+    stops paying a full retry budget to rediscover the same dead model. A success clears that
+    candidate's count, so a recovered model returns to full preference.
     """
 
     route: tuple[RoutingCandidate, ...]
     position: int
     model: Model
     tried_positions: set[int]
+    failure_counts: dict[int, int] = field(default_factory=dict)
 
 
 class FallbackStrategy:
@@ -209,14 +218,15 @@ class ModelRouter(Plugin):
             return
         if event.stop_response is not None:
             state.tried_positions = {state.position}
+            state.failure_counts.pop(state.position, None)  # it works now; stop demoting it
             return
         if event.retry or event.exception is None:
             return
 
+        state.failure_counts[state.position] = state.failure_counts.get(state.position, 0) + 1
         routing_context = self._agent_routing_context(event.agent, event.invocation_state)
-        for next_position, candidate in enumerate(state.route):
-            if next_position in state.tried_positions:
-                continue
+        for next_position in self._advance_order(state):
+            candidate = state.route[next_position]
             state.tried_positions.add(next_position)
             try:
                 model = await self._resolve(candidate, routing_context)
@@ -248,6 +258,13 @@ class ModelRouter(Plugin):
         key = self._state_key(event.agent)
         if _routing_state(event.invocation_state, key) is not None:
             del event.invocation_state[key]
+
+    def _advance_order(self, state: _RoutingState) -> list[int]:
+        """Return untried positions, fewest failures first, then by preference."""
+        return sorted(
+            (position for position in range(len(state.route)) if position not in state.tried_positions),
+            key=lambda position: (state.failure_counts.get(position, 0), position),
+        )
 
     def _state_key(self, agent: object) -> str:
         """Scope routing state to one agent/router pair.

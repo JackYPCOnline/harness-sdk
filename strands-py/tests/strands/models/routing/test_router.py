@@ -631,6 +631,46 @@ async def test_fallback_cycles_back_to_a_failed_candidate_in_the_next_round():
 
 
 @pytest.mark.asyncio
+async def test_repeatedly_failing_candidate_is_demoted_below_healthy_ones():
+    # Cyclic re-arm must not keep paying a retry budget to rediscover a hard-down model, so
+    # fallback prefers the fewest-failed candidate rather than raw declaration order.
+    dead, live, spare = _model("dead"), _model("live"), _model("spare")
+    router = ModelRouter(
+        models=[
+            RoutingCandidate(dead, name="dead"),
+            RoutingCandidate(live, name="live"),
+            RoutingCandidate(spare, name="spare"),
+        ]
+    )
+    agent = _agent_stub()
+    state = _RoutingState(route=router.candidates, position=0, model=dead, tried_positions={0})
+    invocation_state = {router._state_key(agent): state}
+
+    def call(succeeded):
+        return types.SimpleNamespace(
+            retry=False,
+            stop_response=object() if succeeded else None,
+            exception=None if succeeded else ValueError("down"),
+            invocation_state=invocation_state,
+            agent=agent,
+        )
+
+    await router._on_model_result(call(succeeded=False))  # dead fails, advance to live
+    assert state.position == 1
+    await router._on_model_result(call(succeeded=True))  # live succeeds, re-arming the route
+
+    # Round two: live blips. Declaration order would return to dead; demotion picks spare instead.
+    await router._on_model_result(call(succeeded=False))
+
+    assert state.position == 2
+    assert state.model is spare
+
+    # A candidate that succeeds again loses its demotion and regains full preference.
+    await router._on_model_result(call(succeeded=True))
+    assert state.failure_counts == {0: 1, 1: 1}
+
+
+@pytest.mark.asyncio
 async def test_fallback_resolution_error_is_contained():
     router = ModelRouter(models=[_model(), RoutingCandidate(ModelRouter([_model()], strategy=_RaisingStrategy()))])
     agent = _agent_stub()
