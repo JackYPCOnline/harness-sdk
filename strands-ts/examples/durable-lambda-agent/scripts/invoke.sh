@@ -50,7 +50,34 @@ aws lambda invoke \
   /dev/stdout >/dev/null
 
 echo "Invocation queued as $EXECUTION_NAME. Press Ctrl-C to stop following logs."
-aws logs tail "/aws/lambda/$FUNCTION_NAME" \
+LOG_GROUP="/aws/lambda/$FUNCTION_NAME"
+LOG_GROUP_WAIT_SECONDS="${LOG_GROUP_WAIT_SECONDS:-120}"
+POLL_INTERVAL_SECONDS=5
+ELAPSED_SECONDS=0
+RESOLVED_LOG_GROUP=""
+
+while ((ELAPSED_SECONDS < LOG_GROUP_WAIT_SECONDS)); do
+  RESOLVED_LOG_GROUP=$(aws logs describe-log-groups \
+    --log-group-name-prefix "$LOG_GROUP" \
+    --region "$REGION" \
+    --query "logGroups[?logGroupName=='$LOG_GROUP'].logGroupName | [0]" \
+    --output text)
+  if [[ "$RESOLVED_LOG_GROUP" == "$LOG_GROUP" ]]; then
+    break
+  fi
+
+  echo "Waiting for CloudWatch log group $LOG_GROUP..."
+  sleep "$POLL_INTERVAL_SECONDS"
+  ELAPSED_SECONDS=$((ELAPSED_SECONDS + POLL_INTERVAL_SECONDS))
+done
+
+if [[ "$RESOLVED_LOG_GROUP" != "$LOG_GROUP" ]]; then
+  echo "CloudWatch log group was not available after ${LOG_GROUP_WAIT_SECONDS}s." >&2
+  echo "The invocation may still be queued; rerun the command to follow its logs." >&2
+  exit 1
+fi
+
+aws logs tail "$LOG_GROUP" \
   --region "$REGION" \
-  --since 1m \
+  --since 5m \
   --follow
