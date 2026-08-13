@@ -36,10 +36,11 @@ if [[ -z "$FUNCTION_NAME" || "$FUNCTION_NAME" == "None" ]]; then
 fi
 
 EXECUTION_NAME="strands-${SCENARIO}-$(date +%s)"
-PAYLOAD=$(printf '{"prompt":"%s","simulateRestart":%s,"crashAfterFirstTool":%s}' \
-  "$PROMPT" "$SIMULATE_RESTART" "$CRASH_AFTER_FIRST_TOOL")
+SESSION_ID="${SESSION_ID:-$EXECUTION_NAME}"
+PAYLOAD=$(printf '{"prompt":"%s","sessionId":"%s","simulateRestart":%s,"crashAfterFirstTool":%s}' \
+  "$PROMPT" "$SESSION_ID" "$SIMULATE_RESTART" "$CRASH_AFTER_FIRST_TOOL")
 
-echo "Invoking function=$FUNCTION_NAME, region=$REGION, scenario=$SCENARIO"
+echo "Invoking function=$FUNCTION_NAME, region=$REGION, scenario=$SCENARIO, session=$SESSION_ID"
 aws lambda invoke \
   --function-name "${FUNCTION_NAME}:\$LATEST" \
   --invocation-type Event \

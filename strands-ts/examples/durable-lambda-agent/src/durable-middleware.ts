@@ -16,9 +16,13 @@ interface RegisterOptions {
 }
 
 /**
- * Checkpoints model and tool middleware stages with Lambda durable execution.
+ * Persists model and tool stage results with Lambda durable execution.
  *
- * @param agent - Agent whose model and tool stages should be checkpointed.
+ * Strands checkpoint boundaries are handled by the invocation loop in the
+ * Lambda handler. These durable steps restore the state that CheckpointData
+ * intentionally does not contain.
+ *
+ * @param agent - Agent whose model and tool stages should be persisted.
  * @param context - Durable Lambda invocation context.
  * @param options - Optional failure injection used by the recovery demo.
  * @returns A function that removes both middleware handlers.
@@ -52,9 +56,11 @@ export function registerDurableMiddleware(
       stageContext: InvokeModelContext,
       next
     ): AsyncGenerator<AgentStreamEvent, InvokeModelResult, undefined> {
-      const cycleIndex = modelCallIndex
+      // An afterModel checkpoint resume invokes the model again in the TypeScript
+      // SDK, so this index tracks physical model calls rather than ReAct cycles.
+      const callIndex = modelCallIndex
       modelCallIndex += 1
-      const stepName = `invoke-model:cycle-${cycleIndex}`
+      const stepName = `invoke-model:call-${callIndex}`
       const events: AgentStreamEvent[] = []
 
       const persisted = await context.step<{ message: MessageData; stopReason: string }>(stepName, async () => {
