@@ -26,6 +26,7 @@ sam deploy \
   --region "$REGION" \
   --capabilities CAPABILITY_IAM \
   --resolve-s3 \
+  --confirm-changeset \
   --no-fail-on-empty-changeset \
   --parameter-overrides \
     "BedrockModelId=$MODEL_ID" \
