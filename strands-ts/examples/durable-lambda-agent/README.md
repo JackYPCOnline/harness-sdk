@@ -55,7 +55,7 @@ Each invocation gets a unique durable execution name.
 ```bash
 npm run invoke          # normal execution
 npm run invoke:restart  # wait-driven replay
-npm run invoke:crash    # fail and retry the second model step
+npm run invoke:crash    # fail after the first tool, then resume with the second tool
 ```
 
 The invocation command follows CloudWatch logs until interrupted with `Ctrl-C`.

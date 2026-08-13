@@ -9,7 +9,7 @@ import type { DurableContext } from '@aws/durable-execution-sdk-js'
 interface AgentEvent {
   prompt?: string
   simulateRestart?: boolean
-  crashOnSecondCycle?: boolean
+  crashAfterFirstTool?: boolean
 }
 
 interface AgentOutput {
@@ -38,7 +38,7 @@ async function handler(event: AgentEvent, context: DurableContext): Promise<Agen
   })
 
   registerDurableMiddleware(agent, context, {
-    crashOnSecondCycle: event.crashOnSecondCycle === true,
+    crashAfterFirstTool: event.crashAfterFirstTool === true,
   })
 
   const result = await agent.invoke(prompt)

@@ -5,7 +5,7 @@ REGION="${AWS_REGION:-us-west-2}"
 STACK_NAME="${STACK_NAME:-strands-durable-agent}"
 PROMPT="${PROMPT:-Plan my trip to Seattle.}"
 SIMULATE_RESTART=false
-CRASH_ON_SECOND_CYCLE=false
+CRASH_AFTER_FIRST_TOOL=false
 SCENARIO=baseline
 
 case "${1:-}" in
@@ -14,8 +14,8 @@ case "${1:-}" in
     SCENARIO=restart
     ;;
   --crash)
-    CRASH_ON_SECOND_CYCLE=true
-    SCENARIO=crash
+    CRASH_AFTER_FIRST_TOOL=true
+    SCENARIO=crash-after-tool
     ;;
   "") ;;
   *)
@@ -36,8 +36,8 @@ if [[ -z "$FUNCTION_NAME" || "$FUNCTION_NAME" == "None" ]]; then
 fi
 
 EXECUTION_NAME="strands-${SCENARIO}-$(date +%s)"
-PAYLOAD=$(printf '{"prompt":"%s","simulateRestart":%s,"crashOnSecondCycle":%s}' \
-  "$PROMPT" "$SIMULATE_RESTART" "$CRASH_ON_SECOND_CYCLE")
+PAYLOAD=$(printf '{"prompt":"%s","simulateRestart":%s,"crashAfterFirstTool":%s}' \
+  "$PROMPT" "$SIMULATE_RESTART" "$CRASH_AFTER_FIRST_TOOL")
 
 echo "Invoking function=$FUNCTION_NAME, region=$REGION, scenario=$SCENARIO"
 aws lambda invoke \

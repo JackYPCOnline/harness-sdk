@@ -12,7 +12,7 @@ import type {
 } from '@strands-agents/sdk'
 
 interface RegisterOptions {
-  crashOnSecondCycle?: boolean
+  crashAfterFirstTool?: boolean
 }
 
 /**
@@ -29,6 +29,7 @@ export function registerDurableMiddleware(
   options: RegisterOptions = {}
 ): () => void {
   let modelCallIndex = 0
+  let toolCallIndex = 0
   let loggingContext: DurableLoggingContext | undefined
 
   context.configureLogger({
@@ -54,36 +55,18 @@ export function registerDurableMiddleware(
       const cycleIndex = modelCallIndex
       modelCallIndex += 1
       const stepName = `invoke-model:cycle-${cycleIndex}`
-      const shouldCrash = options.crashOnSecondCycle === true && cycleIndex === 1
       const events: AgentStreamEvent[] = []
 
-      const persisted = await context.step<{ message: MessageData; stopReason: string }>(
-        stepName,
-        async (stepContext) => {
-          const attempt = loggingContext?.getDurableLogData().attempt ?? 1
-          if (shouldCrash && attempt === 1) {
-            stepContext.logger.warn(`step=<${stepName}>, attempt=<${attempt}> | injecting failure`)
-            throw new Error('Injected failure during the second model cycle')
-          }
-
-          const result = await drainGenerator(
-            () => next(stageContext),
-            (event) => events.push(event)
-          )
-          return {
-            message: result.result.message.toJSON(),
-            stopReason: result.result.stopReason,
-          }
-        },
-        shouldCrash
-          ? {
-              retryStrategy: (_error, attemptCount) => ({
-                shouldRetry: attemptCount < 2,
-                delay: { seconds: 1 },
-              }),
-            }
-          : undefined
-      )
+      const persisted = await context.step<{ message: MessageData; stopReason: string }>(stepName, async () => {
+        const result = await drainGenerator(
+          () => next(stageContext),
+          (event) => events.push(event)
+        )
+        return {
+          message: result.result.message.toJSON(),
+          stopReason: result.result.stopReason,
+        }
+      })
 
       yield* events
       return {
@@ -101,6 +84,8 @@ export function registerDurableMiddleware(
       stageContext: ExecuteToolContext,
       next
     ): AsyncGenerator<AgentStreamEvent, ExecuteToolResult, undefined> {
+      const currentToolIndex = toolCallIndex
+      toolCallIndex += 1
       const stepName = `tool:${stageContext.toolUse.name}:${stageContext.toolUse.toolUseId}`
       const events: AgentStreamEvent[] = []
       const persisted = await context.step<ReturnType<ToolResultBlock['toJSON']>>(stepName, async () => {
@@ -112,6 +97,30 @@ export function registerDurableMiddleware(
       })
 
       yield* events
+
+      if (options.crashAfterFirstTool === true && currentToolIndex === 0) {
+        const failureStepName = `failure-after-tool:${stageContext.toolUse.toolUseId}`
+        await context.step<boolean>(
+          failureStepName,
+          async (stepContext) => {
+            const attempt = loggingContext?.getDurableLogData().attempt ?? 1
+            if (attempt === 1) {
+              stepContext.logger.warn(`step=<${failureStepName}>, attempt=<${attempt}> | injecting failure`)
+              throw new Error('Injected failure after the first tool completed')
+            }
+
+            stepContext.logger.info(`step=<${failureStepName}>, attempt=<${attempt}> | continuing after retry`)
+            return true
+          },
+          {
+            retryStrategy: (_error, attemptCount) => ({
+              shouldRetry: attemptCount < 2,
+              delay: { seconds: 1 },
+            }),
+          }
+        )
+      }
+
       return { result: ToolResultBlock.fromJSON(persisted) }
     }
   )
