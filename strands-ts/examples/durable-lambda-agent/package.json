@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:sdk": "npm --prefix ../../.. run build --workspace strands-ts",
+    "build:sdk": "npm run build --prefix ../../..",
     "build": "tsc --noEmit",
     "bundle": "node bundle.mjs",
     "deploy": "bash scripts/deploy.sh",
