@@ -17,8 +17,6 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
-from .._middleware.stages import ExecuteToolContext, ExecuteToolStage
-from .._middleware.types import MiddlewareNext
 from ..hooks import (
     AfterToolCallEvent,
     AfterToolsEvent,
@@ -26,6 +24,8 @@ from ..hooks import (
     BeforeToolsEvent,
     HookOrder,
 )
+from ..middleware.stages import ExecuteToolContext, ExecuteToolStage
+from ..middleware.types import MiddlewareNext
 from ..plugins import Plugin
 from ..types._events import AgentAsToolStreamEvent, ToolResultEvent, TypedEvent
 from ..types.content import ContentBlock

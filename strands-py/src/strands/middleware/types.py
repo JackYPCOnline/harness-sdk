@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
+from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 TContext = TypeVar("TContext")
 TResult = TypeVar("TResult")
@@ -59,6 +59,7 @@ class MiddlewareInputPhase(Generic[TContext, TResult, TEvent]):
     __slots__ = ("_stage", "_phase")
 
     def __init__(self, stage: MiddlewareStage[TContext, TResult, TEvent]) -> None:
+        """Bind this phase sub-token to its parent stage."""
         self._stage = stage
         self._phase = "input"
 
@@ -69,6 +70,7 @@ class MiddlewareWrapPhase(Generic[TContext, TResult, TEvent]):
     __slots__ = ("_stage", "_phase")
 
     def __init__(self, stage: MiddlewareStage[TContext, TResult, TEvent]) -> None:
+        """Bind this phase sub-token to its parent stage."""
         self._stage = stage
         self._phase = "wrap"
 
@@ -79,6 +81,7 @@ class MiddlewareOutputPhase(Generic[TContext, TResult, TEvent]):
     __slots__ = ("_stage", "_phase")
 
     def __init__(self, stage: MiddlewareStage[TContext, TResult, TEvent]) -> None:
+        """Bind this phase sub-token to its parent stage."""
         self._stage = stage
         self._phase = "output"
 
@@ -89,25 +92,34 @@ class MiddlewareStage(Generic[TContext, TResult, TEvent]):
     __slots__ = ("name", "Input", "Wrap", "Output")
 
     def __init__(self, name: str) -> None:
+        """Create a stage token with its Input/Wrap/Output phase sub-tokens."""
         self.name = name
         self.Input: MiddlewareInputPhase[TContext, TResult, TEvent] = MiddlewareInputPhase(self)
         self.Wrap: MiddlewareWrapPhase[TContext, TResult, TEvent] = MiddlewareWrapPhase(self)
         self.Output: MiddlewareOutputPhase[TContext, TResult, TEvent] = MiddlewareOutputPhase(self)
 
     def __repr__(self) -> str:
+        """Return a debug representation naming the stage."""
         return f"MiddlewareStage(name={self.name!r})"
 
     def __hash__(self) -> int:
+        """Hash by identity so each stage token is a distinct registry key."""
         return id(self)
 
     def __eq__(self, other: object) -> bool:
+        """Compare by identity — a stage token equals only itself."""
         return self is other
 
 
-MiddlewareNext = Callable[[Any], AsyncGenerator[Any, None]]
-MiddlewareHandler = Callable[[Any, MiddlewareNext], AsyncGenerator[Any, None]]
-MiddlewareInputHandler = Callable[[Any], Any | Awaitable[Any]]
+# Handler type aliases are generic over the stage's context/result/event types so that the
+# per-phase overloads on ``Agent.add_middleware`` bind them and check the handler signature at
+# the call site. Python async generators cannot carry a return type, so ``TResult`` is not
+# expressible on the Wrap-phase generator (the result is the last yielded event, by SDK
+# convention) — only Output handlers, which receive the result explicitly, are generic over it.
+MiddlewareNext = Callable[[TContext], AsyncGenerator[TEvent, None]]
+MiddlewareHandler = Callable[[TContext, MiddlewareNext[TContext, TEvent]], AsyncGenerator[TEvent, None]]
+MiddlewareInputHandler = Callable[[TContext], TContext | Awaitable[TContext]]
 # Output handlers take and return a MiddlewareResult wrapping the result event.
 MiddlewareOutputHandler = Callable[
-    ["MiddlewareResult[Any]"], "MiddlewareResult[Any] | Awaitable[MiddlewareResult[Any]]"
+    [MiddlewareResult[TResult]], MiddlewareResult[TResult] | Awaitable[MiddlewareResult[TResult]]
 ]

@@ -6,7 +6,7 @@ import pytest
 
 import strands
 from strands import Agent
-from strands._middleware.stages import AgentStreamContext, AgentStreamStage, MiddlewareInterruptResult
+from strands.middleware.stages import AgentStreamContext, AgentStreamStage, MiddlewareInterruptResult
 from strands.session import FileSessionManager
 from strands.telemetry.metrics import EventLoopMetrics
 from strands.types._events import EventLoopStopEvent, InitEventLoopEvent, ModelMessageEvent, TextStreamEvent
@@ -339,7 +339,7 @@ def test_no_agent_stream_middleware_works(agent):
 
 def test_other_stage_middleware_does_not_affect_agent_stream():
     """Middleware on InvokeModelStage does not run as AgentStreamStage middleware."""
-    from strands._middleware.stages import InvokeModelStage
+    from strands.middleware.stages import InvokeModelStage
 
     model = MockedModelProvider([{"role": "assistant", "content": [{"text": "ok"}]}])
     agent = Agent(model=model, callback_handler=None)

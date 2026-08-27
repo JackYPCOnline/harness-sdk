@@ -33,6 +33,7 @@ class MiddlewareRegistry:
     """Registry that stores middleware handlers keyed by stage tokens and composes them into chains."""
 
     def __init__(self) -> None:
+        """Initialize an empty registry with no handlers."""
         self._handlers: dict[MiddlewareStage[Any, Any, Any], list[_TaggedHandler]] = {}
 
     def add_middleware(

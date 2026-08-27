@@ -25,6 +25,7 @@ from typing import (
     TypeVar,
     Union,
     cast,
+    overload,
 )
 
 from opentelemetry import trace as trace_api
@@ -50,8 +51,6 @@ if TYPE_CHECKING:
     from .._context_manager.types import ContextManagerConfig
     from ..background_tasks._background_tasks import _BackgroundTasks
     from ..tools import ToolProvider
-from .._middleware import MiddlewareRegistry
-from .._middleware.stages import AgentStreamContext, AgentStreamStage
 from ..handlers.callback_handler import PrintingCallbackHandler, null_callback_handler
 from ..hooks import (
     AfterInvocationEvent,
@@ -69,6 +68,17 @@ from ..interrupt import InterruptException, _InterruptState
 from ..interventions.handler import InterventionHandler
 from ..interventions.registry import InterventionRegistry
 from ..memory import MemoryManager, MemoryManagerConfig
+from ..middleware.registry import MiddlewareRegistry
+from ..middleware.stages import AgentStreamContext, AgentStreamStage
+from ..middleware.types import (
+    MiddlewareHandler,
+    MiddlewareInputHandler,
+    MiddlewareInputPhase,
+    MiddlewareOutputHandler,
+    MiddlewareOutputPhase,
+    MiddlewareStage,
+    MiddlewareWrapPhase,
+)
 from ..models.bedrock import BedrockModel
 from ..models.model import Model, _ModelPlugin
 from ..models.routing import ModelRouter
@@ -135,6 +145,11 @@ async def _link_cancel_signal(external: threading.Event, internal: threading.Eve
 
 # TypeVar for generic structured output
 T = TypeVar("T", bound=BaseModel)
+
+# TypeVars for the add_middleware overloads, binding a stage/phase token's generics to the handler.
+_MwContext = TypeVar("_MwContext")
+_MwResult = TypeVar("_MwResult")
+_MwEvent = TypeVar("_MwEvent")
 
 
 # Sentinel class and object to distinguish between explicit None and default parameter value
@@ -500,7 +515,7 @@ class Agent(AgentBase, LocalAgent):
         # In agentic mode, surface live token usage to the model so it can decide when to compress.
         if context_manager == "agentic":
             from .._context_manager.modes.agentic.agentic_context import create_token_usage_middleware
-            from .._middleware.stages import InvokeModelStage
+            from ..middleware.stages import InvokeModelStage
 
             self._middleware_registry.add_middleware(InvokeModelStage.Input, create_token_usage_middleware())
 
@@ -1239,6 +1254,78 @@ class Agent(AgentBase, LocalAgent):
             https://strandsagents.com/docs/user-guide/concepts/agents/hooks/
         """
         self.hooks.add_callback(event_type, callback, order=order)
+
+    @overload
+    def add_middleware(
+        self,
+        stage_or_phase: MiddlewareInputPhase[_MwContext, _MwResult, _MwEvent],
+        handler: MiddlewareInputHandler[_MwContext],
+    ) -> None: ...
+
+    @overload
+    def add_middleware(
+        self,
+        stage_or_phase: MiddlewareOutputPhase[_MwContext, _MwResult, _MwEvent],
+        handler: MiddlewareOutputHandler[_MwResult],
+    ) -> None: ...
+
+    @overload
+    def add_middleware(
+        self,
+        stage_or_phase: MiddlewareWrapPhase[_MwContext, _MwResult, _MwEvent],
+        handler: MiddlewareHandler[_MwContext, _MwEvent],
+    ) -> None: ...
+
+    @overload
+    def add_middleware(
+        self,
+        stage_or_phase: MiddlewareStage[_MwContext, _MwResult, _MwEvent],
+        handler: MiddlewareHandler[_MwContext, _MwEvent],
+    ) -> None: ...
+
+    def add_middleware(self, stage_or_phase: Any, handler: Any) -> None:
+        """Register a middleware handler for a stage or one of its phases.
+
+        Middleware wraps a stage of the agent run and can transform inputs, transform results,
+        or wrap execution to retry, cache, short-circuit, or gate behind a human-in-the-loop
+        interrupt. Register against a stage token (e.g. ``InvokeModelStage``) for the Wrap phase,
+        or a phase sub-token (``InvokeModelStage.Input`` / ``.Output``) for a pure transform.
+
+        Regardless of registration order, handlers run Input -> Wrap -> Output -> terminal, and
+        the first registered is the outermost. Handlers cannot be removed once registered.
+
+        Args:
+            stage_or_phase: A stage token (Wrap phase) or a phase sub-token (``.Input`` /
+                ``.Output``) identifying where the handler runs.
+            handler: The handler to register. A Wrap handler is an async generator
+                ``(context, next_fn)`` that yields events; an Input handler is
+                ``(context) -> context`` (sync or async); an Output handler is
+                ``(MiddlewareResult) -> MiddlewareResult`` (sync or async).
+
+        Example:
+            ```python
+            from strands.middleware import InvokeModelStage
+
+            agent = Agent()
+
+            # Wrap: full control over the model call.
+            async def timing(context, next_fn):
+                async for event in next_fn(context):
+                    yield event
+
+            agent.add_middleware(InvokeModelStage, timing)
+
+            # Input: transform the context before the call.
+            def inject_prompt(context):
+                return context.replace(system_prompt="Be concise.")
+
+            agent.add_middleware(InvokeModelStage.Input, inject_prompt)
+            ```
+
+        Docs:
+            https://strandsagents.com/docs/user-guide/sdk/agents/middleware/
+        """
+        self._middleware_registry.add_middleware(stage_or_phase, handler)
 
     def __del__(self) -> None:
         """Clean up resources when agent is garbage collected."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import uuid
 from collections.abc import Mapping
@@ -11,12 +12,14 @@ from typing import TYPE_CHECKING, Any
 from ..interrupt import _AGENT_STREAM_INTERRUPT_ID_PREFIX, Interrupt, InterruptException
 from .types import MiddlewareStage
 
+# Sentinel for replace(): distinguishes "field omitted" (keep current value) from an explicit None.
+_UNSET: Any = object()
+
 if TYPE_CHECKING:
-    from ..agent.agent import Agent
-    from ..bidi.agent import BidiAgent
     from ..interrupt import _InterruptState
     from ..models.model import Model
     from ..types._events import EventLoopStopEvent, ModelStopReason, ToolResultEvent, TypedEvent
+    from ..types.agent import LocalAgent
     from ..types.content import Messages, SystemPrompt
     from ..types.tools import AgentTool, ToolChoice, ToolSpec, ToolUse
 
@@ -32,7 +35,7 @@ class InvokeModelContext:
     as ``agent.model``; middleware may replace it per call).
     """
 
-    agent: Agent
+    agent: LocalAgent
     messages: Messages
     system_prompt: SystemPrompt
     tool_specs: list[ToolSpec]
@@ -41,6 +44,55 @@ class InvokeModelContext:
     model: Model
     projected_input_tokens: int | None = None
     dynamic_trailing_blocks: int = 0
+
+    def replace(
+        self,
+        *,
+        messages: Messages = _UNSET,
+        system_prompt: SystemPrompt = _UNSET,
+        tool_specs: list[ToolSpec] = _UNSET,
+        tool_choice: ToolChoice | None = _UNSET,
+        invocation_state: dict[str, Any] = _UNSET,
+        model: Model = _UNSET,
+        projected_input_tokens: int | None = _UNSET,
+        dynamic_trailing_blocks: int = _UNSET,
+    ) -> InvokeModelContext:
+        """Return a copy of this context with the given fields replaced, others unchanged.
+
+        Typed convenience wrapper around ``dataclasses.replace`` (following the
+        ``datetime.replace()`` precedent) so middleware can transform the context without
+        importing ``dataclasses``:
+
+            modified = context.replace(system_prompt="Be concise.")
+
+        Args:
+            messages: Messages to send to the model.
+            system_prompt: System prompt guiding the model.
+            tool_specs: Tool specifications available to the model.
+            tool_choice: How the model selects tools.
+            invocation_state: Per-invocation state (shared by reference across the run).
+            model: The model this call invokes.
+            projected_input_tokens: Estimated input token count for this call.
+            dynamic_trailing_blocks: Trailing blocks of the last user message rebuilt each call.
+
+        Returns:
+            A new ``InvokeModelContext`` with the specified fields replaced.
+        """
+        changes: dict[str, Any] = {
+            name: value
+            for name, value in {
+                "messages": messages,
+                "system_prompt": system_prompt,
+                "tool_specs": tool_specs,
+                "tool_choice": tool_choice,
+                "invocation_state": invocation_state,
+                "model": model,
+                "projected_input_tokens": projected_input_tokens,
+                "dynamic_trailing_blocks": dynamic_trailing_blocks,
+            }.items()
+            if value is not _UNSET
+        }
+        return dataclasses.replace(self, **changes)
 
 
 InvokeModelStage: MiddlewareStage[InvokeModelContext, ModelStopReason, TypedEvent] = MiddlewareStage(name="invokeModel")
@@ -123,7 +175,7 @@ class ExecuteToolContext:
     approval flows.
     """
 
-    agent: Agent | BidiAgent
+    agent: LocalAgent
     tool: AgentTool | None
     tool_use: ToolUse
     invocation_state: dict[str, Any]
@@ -174,6 +226,40 @@ class ExecuteToolContext:
         """
         return f"v1:middleware_execute_tool:{self.tool_use['toolUseId']}:{uuid.uuid5(uuid.NAMESPACE_OID, name)}"
 
+    def replace(
+        self,
+        *,
+        tool: AgentTool | None = _UNSET,
+        tool_use: ToolUse = _UNSET,
+        invocation_state: dict[str, Any] = _UNSET,
+    ) -> ExecuteToolContext:
+        """Return a copy of this context with the given fields replaced, others unchanged.
+
+        Typed convenience wrapper around ``dataclasses.replace`` (following the
+        ``datetime.replace()`` precedent) so middleware can transform the context without
+        importing ``dataclasses``:
+
+            modified = context.replace(tool_use={**context.tool_use, "input": cleaned})
+
+        Args:
+            tool: The resolved tool implementation, or ``None`` if not found.
+            tool_use: The tool use request (name, toolUseId, input).
+            invocation_state: Per-invocation state (shared by reference across the run).
+
+        Returns:
+            A new ``ExecuteToolContext`` with the specified fields replaced.
+        """
+        changes: dict[str, Any] = {
+            name: value
+            for name, value in {
+                "tool": tool,
+                "tool_use": tool_use,
+                "invocation_state": invocation_state,
+            }.items()
+            if value is not _UNSET
+        }
+        return dataclasses.replace(self, **changes)
+
 
 ExecuteToolStage: MiddlewareStage[ExecuteToolContext, ToolResultEvent, TypedEvent] = MiddlewareStage(name="executeTool")
 """Built-in stage wrapping individual tool execution.
@@ -202,7 +288,7 @@ class AgentStreamContext:
     approval flows.
     """
 
-    agent: Agent
+    agent: LocalAgent
     messages: Messages
     invocation_state: dict[str, Any]
     # A snapshot of the agent's interrupts taken before the pass, threaded in so interrupt() can
@@ -251,7 +337,7 @@ class AgentStreamContext:
         return f"{_AGENT_STREAM_INTERRUPT_ID_PREFIX}{uuid.uuid5(uuid.NAMESPACE_OID, name)}"
 
 
-# Internal: not exported from _middleware/__init__.py. The context's copy-vs-reference
+# Internal: not exported from middleware/__init__.py (kept out of __all__). The copy-vs-reference
 # contract for messages/invocation_state is not yet finalized, matching the TS SDK, which
 # keeps AgentStreamStage out of its public barrel (@internal) for the same reason.
 AgentStreamStage: MiddlewareStage[AgentStreamContext, EventLoopStopEvent, TypedEvent] = MiddlewareStage(

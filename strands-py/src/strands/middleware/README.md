@@ -295,17 +295,30 @@ guard for it explicitly.
 
 Once registered, middleware cannot be removed. This matches the Python hook system which also does not support removal.
 
-## Private module
+## Public surface
 
-The `_middleware/` package is not part of the public API. Internal consumers access it via `agent._middleware_registry.add_middleware(...)`.
+The `middleware/` package is public. Register handlers with `agent.add_middleware(stage_or_phase,
+handler)` — a method with per-phase `@overload`s that bind the stage token's generics through the
+phase sub-tokens, so `context` fields, the result type, and the `next_fn` signature are checked at
+the call site (matching the TS SDK's per-phase overloads). The handler type aliases
+(`MiddlewareHandler`, `MiddlewareInputHandler`, `MiddlewareOutputHandler`, `MiddlewareNext`) are
+generic over the same type parameters. Python async generators cannot carry a return type, so the
+Wrap-phase generic omits `TResult` (the result is the last yielded event); only Output handlers,
+which receive the result explicitly, are generic over it.
 
-**When this goes public**, `add_middleware` and the handler type aliases should be typed so an
-IDE helps the author: `add_middleware` takes `handler: Any` and every adapter types the context
-as `Any`, so the `MiddlewareStage[TContext, TResult, TEvent]` generics do not currently flow to
-handlers (unlike the TS SDK, whose per-phase overloads give full inference on `context`/result).
-The public surface should add `@overload`s per phase token and bind real generics through the
-phase sub-tokens so context fields, the result type, and the `next_fn` signature are checked
-statically rather than only at runtime.
+`InvokeModelStage` and `ExecuteToolStage` (and their contexts, plus the per-stage result event
+types `ModelStopReason` and `ToolResultEvent`) are exported from `strands.middleware`.
+`AgentStreamStage`/`AgentStreamContext` stay internal — importable from `strands.middleware.stages`
+but kept out of `__all__` — because their copy-vs-reference contract is not finalized (see below),
+matching the TS SDK's `@internal` treatment.
+
+The `MiddlewareRegistry` stays private on the agent (`agent._middleware_registry`) and is not
+exported from `strands.middleware`; internal code imports it from `strands.middleware.registry`.
+`add_middleware` is the only public entry point.
+
+**Divergence from TS: no removal.** TS `addMiddleware` returns a cleanup function and its registry
+has `remove()`. Python `add_middleware` returns `None` and there is no removal — matching the Python
+hook system, which also does not support removal (see "No removal / cleanup" below).
 
 ## Tool exceptions are caught in the terminal
 
@@ -340,13 +353,15 @@ modified = replace(context, model=other_model)
 
 ## Context transformation
 
-Middleware creates modified contexts via `dataclasses.replace()`:
+Public contexts (`InvokeModelContext`, `ExecuteToolContext`) expose a typed `.replace()` method
+(following the `datetime.replace()` precedent) so middleware transforms the context without
+importing `dataclasses`:
 ```python
-from dataclasses import replace
-modified = replace(context, system_prompt="Injected")
+modified = context.replace(system_prompt="Injected")
 ```
 
-When this goes public, we should add a typed `.replace()` method to context dataclasses for better discoverability and ergonomics (following `datetime.replace()` precedent).
+`dataclasses.replace(context, ...)` still works and is equivalent; `.replace()` only adds
+discoverability and a typed keyword surface.
 
 ## Generator cleanup
 

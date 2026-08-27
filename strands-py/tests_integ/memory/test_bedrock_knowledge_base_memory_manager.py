@@ -32,11 +32,11 @@ import boto3
 import pytest
 
 from strands import Agent
-from strands._middleware.stages import InvokeModelStage
 from strands.memory.extraction.model_extractor import ModelExtractor
 from strands.memory.extraction.triggers import IntervalTrigger, InvocationTrigger
 from strands.memory.extraction.types import ExtractionConfig
 from strands.memory.memory_manager import MemoryManager
+from strands.middleware.stages import InvokeModelStage
 from strands.models.bedrock import BedrockModel
 from strands.vended_memory_stores.bedrock_knowledge_base import (
     BedrockKnowledgeBaseConfig,

@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from strands import Agent, Plugin
-from strands._middleware.stages import InvokeModelContext, InvokeModelStage
-from strands._middleware.types import MiddlewareResult
 from strands.hooks import AfterModelCallEvent, BeforeModelCallEvent
+from strands.middleware.stages import InvokeModelContext, InvokeModelStage
+from strands.middleware.types import MiddlewareResult
 from strands.types._events import ModelStopReason
 from strands.types.streaming import Metrics, Usage
 from tests.fixtures.mock_hook_provider import MockHookProvider

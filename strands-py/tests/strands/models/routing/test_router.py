@@ -670,7 +670,7 @@ class _ModelProbe(Plugin):
         self.seen = None
 
     def init_agent(self, agent):
-        from strands._middleware.stages import InvokeModelStage
+        from strands.middleware.stages import InvokeModelStage
 
         def record(context):
             self.seen = context.model

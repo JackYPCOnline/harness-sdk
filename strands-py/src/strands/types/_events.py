@@ -397,7 +397,7 @@ class ToolInterruptEvent(TypedEvent):
         """True — this is a control-flow signal, never a stage result.
 
         Satisfies the ``InterruptControlEvent`` protocol so the middleware Output-phase
-        adapter recognizes an interrupt as never-a-result (see ``_middleware/registry.py``)
+        adapter recognizes an interrupt as never-a-result (see ``middleware/registry.py``)
         without the stage-agnostic registry importing tool-specific event types.
         """
         return True

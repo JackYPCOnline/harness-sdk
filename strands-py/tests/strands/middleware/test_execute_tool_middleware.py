@@ -7,9 +7,9 @@ import pytest
 
 import strands
 from strands import Agent, Plugin
-from strands._middleware.stages import ExecuteToolContext, ExecuteToolStage
-from strands._middleware.types import MiddlewareResult
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
+from strands.middleware.stages import ExecuteToolContext, ExecuteToolStage
+from strands.middleware.types import MiddlewareResult
 from strands.types._events import ToolInterruptEvent, ToolResultEvent, ToolStreamEvent
 from strands.types.tools import ToolContext
 from tests.fixtures.mock_hook_provider import MockHookProvider

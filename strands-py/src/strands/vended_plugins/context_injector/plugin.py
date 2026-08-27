@@ -22,9 +22,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..._middleware.stages import InvokeModelStage
 from ...injection._message_injection import RenderContent, _create_injection_middleware
 from ...injection.types import InjectionTriggerPredicate
+from ...middleware.stages import InvokeModelStage
 from ...plugins import Plugin
 
 if TYPE_CHECKING:

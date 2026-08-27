@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from strands._middleware.stages import InvokeModelContext, InvokeModelStage
+from strands.middleware.stages import InvokeModelContext, InvokeModelStage
 from strands.vended_plugins.context_injector import ContextInjector
 
 

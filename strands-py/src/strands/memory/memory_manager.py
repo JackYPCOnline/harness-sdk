@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from opentelemetry import trace as trace_api
 
-from .._middleware.stages import InvokeModelStage
 from ..hooks.events import MessageAddedEvent
 from ..injection._message_injection import _create_injection_middleware, _is_user_turn
 from ..injection._xml import _escape_xml_attr, _escape_xml_text
+from ..middleware.stages import InvokeModelStage
 from ..plugins.plugin import Plugin
 from ..telemetry.tracer import get_tracer
 from ..tools.decorator import tool

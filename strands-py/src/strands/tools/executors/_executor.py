@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from opentelemetry import trace as trace_api
 
-from ..._middleware.stages import ExecuteToolContext, ExecuteToolStage, MiddlewareInterruptResult
 from ...hooks import AfterToolCallEvent, BeforeToolCallEvent
 from ...interrupt import InterruptException
+from ...middleware.stages import ExecuteToolContext, ExecuteToolStage, MiddlewareInterruptResult
 from ...telemetry.metrics import Trace
 from ...telemetry.tracer import get_tracer, serialize
 from ...types._events import ToolCancelEvent, ToolInterruptEvent, ToolResultEvent, ToolStreamEvent, TypedEvent
@@ -527,7 +527,7 @@ def _route_background(
     return tool_use, background_tasks.route_tool_call(tool_use, requested_tool, selected_tool)
 
 
-def _lookup_tool(agent: "Agent | BidiAgent", tool_name: str) -> AgentTool | None:
+def _lookup_tool(agent: LocalAgent, tool_name: str) -> AgentTool | None:
     """Resolve a tool by name, preferring dynamic tools over the static registry.
 
     Also used after BeforeToolCallEvent: a hook that renames ``tool_use`` without selecting a

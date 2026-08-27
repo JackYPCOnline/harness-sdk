@@ -10,9 +10,9 @@ from unittest.mock import ANY, AsyncMock
 import pytest
 
 from strands import Agent, ToolContext, tool
-from strands._middleware.stages import ExecuteToolStage, InvokeModelStage
 from strands.hooks import AfterToolCallEvent, AgentInitializedEvent, BeforeToolCallEvent
 from strands.interrupt import Interrupt
+from strands.middleware.stages import ExecuteToolStage, InvokeModelStage
 from strands.tools.tools import PythonAgentTool
 from strands.types._events import ToolResultEvent
 from strands.types.content import Messages

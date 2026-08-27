@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
-from strands._middleware.registry import MiddlewareRegistry
-from strands._middleware.types import MiddlewareResult, MiddlewareStage
 from strands.interrupt import Interrupt, InterruptException
+from strands.middleware.registry import MiddlewareRegistry
+from strands.middleware.types import MiddlewareResult, MiddlewareStage
 
 
 @pytest.fixture

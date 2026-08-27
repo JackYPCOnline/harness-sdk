@@ -39,7 +39,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from strands._middleware.stages import InvokeModelContext, InvokeModelStage
 from strands.hooks.events import AfterInvocationEvent, MessageAddedEvent
 from strands.hooks.registry import HookOrder
 from strands.memory import AggregateMemoryError
@@ -60,6 +59,7 @@ from strands.memory.types import (
     _has_method,
     _has_write_sink,
 )
+from strands.middleware.stages import InvokeModelContext, InvokeModelStage
 from strands.tools.decorator import tool
 
 # --------------------------------------------------------------------------- #
