@@ -88,20 +88,6 @@ def test_resolve_snapshot_fields_all_excluded_raises():
         resolve_snapshot_fields(exclude=list(ALL_SNAPSHOT_FIELDS))  # type: ignore[list-item]
 
 
-def test_resolve_snapshot_fields_custom_valid_fields_and_presets():
-    valid_fields = ("messages", "state")
-    presets = {"session": ("messages",)}
-
-    tru_fields = resolve_snapshot_fields(
-        preset="session", include=["state"], valid_fields=valid_fields, presets=presets
-    )
-    exp_fields = {"messages", "state"}
-    assert tru_fields == exp_fields
-
-    with pytest.raises(SnapshotException, match="Invalid snapshot field: 'model_state'"):
-        resolve_snapshot_fields(include=["model_state"], valid_fields=valid_fields, presets=presets)
-
-
 _ORDERING_CASES = [
     # (preset, include, exclude)
     ("session", [], []),

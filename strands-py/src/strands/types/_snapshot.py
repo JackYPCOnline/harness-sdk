@@ -105,8 +105,6 @@ def resolve_snapshot_fields(
     preset: SnapshotPreset | None = None,
     include: list[SnapshotField] | None = None,
     exclude: list[SnapshotField] | None = None,
-    valid_fields: tuple[SnapshotField, ...] = ALL_SNAPSHOT_FIELDS,
-    presets: dict[str, tuple[SnapshotField, ...]] = SNAPSHOT_PRESETS,
 ) -> set[SnapshotField]:
     """Resolve the set of fields to capture based on options.
 
@@ -115,7 +113,7 @@ def resolve_snapshot_fields(
     Raises:
         SnapshotException: If any field name is invalid or the resolved set is empty.
     """
-    valid = set(valid_fields)
+    valid = set(ALL_SNAPSHOT_FIELDS)
 
     # Validate include/exclude field names
     for f in include or []:
@@ -127,7 +125,7 @@ def resolve_snapshot_fields(
 
     # Step 1: start with preset
     if preset is not None:
-        fields: set[SnapshotField] = set(presets[preset])
+        fields: set[SnapshotField] = set(SNAPSHOT_PRESETS[preset])
     else:
         fields = set()
 

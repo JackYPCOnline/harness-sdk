@@ -415,19 +415,15 @@ class BidiAgent(LocalAgent):
             A Snapshot containing the captured agent state.
 
         Raises:
-            SnapshotException: If no fields are resolved or the preset or a field is invalid or unsupported.
+            SnapshotException: If no fields are resolved or a field is invalid or unsupported.
         """
-        if preset is not None and preset not in BIDI_SNAPSHOT_PRESETS:
-            raise SnapshotException(
-                f"Invalid snapshot preset: {preset!r}. Valid presets: {sorted(BIDI_SNAPSHOT_PRESETS)}"
-            )
-        fields = resolve_snapshot_fields(
-            preset=preset,
-            include=include,
-            exclude=exclude,
-            valid_fields=BIDI_SNAPSHOT_FIELDS,
-            presets=BIDI_SNAPSHOT_PRESETS,
-        )
+        for snapshot_field in [*(include or []), *(exclude or [])]:
+            if snapshot_field not in BIDI_SNAPSHOT_FIELDS:
+                raise SnapshotException(
+                    f"Invalid snapshot field: {snapshot_field!r}. Valid fields: {sorted(BIDI_SNAPSHOT_FIELDS)}"
+                )
+        preset_fields = BIDI_SNAPSHOT_PRESETS[preset] if preset is not None else ()
+        fields = resolve_snapshot_fields(include=[*preset_fields, *(include or [])], exclude=exclude)
 
         data: dict[str, Any] = {}
         if "messages" in fields:

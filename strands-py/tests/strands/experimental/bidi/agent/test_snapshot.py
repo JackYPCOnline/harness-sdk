@@ -71,13 +71,6 @@ def test_take_snapshot_rejects_unsupported_field(field, option):
         agent.take_snapshot(preset="session", **{option: [field]})
 
 
-def test_take_snapshot_rejects_invalid_preset():
-    agent = _make_agent()
-
-    with pytest.raises(SnapshotException, match="Invalid snapshot preset: 'bogus'"):
-        agent.take_snapshot(preset="bogus")  # type: ignore[arg-type]
-
-
 def test_take_snapshot_app_data_stored_verbatim():
     agent = _make_agent()
     app_data = {"checkpoint": "before-tool", "nested": {"k": [1, 2]}}
