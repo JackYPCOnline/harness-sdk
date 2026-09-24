@@ -99,7 +99,10 @@ class LocalAgent(Protocol):
         ...
 
     def load_snapshot(self, snapshot: Snapshot) -> None:
-        """Restore agent state from a previously captured snapshot."""
+        """Restore agent state from a previously captured snapshot.
+
+        Only fields present in snapshot.data are restored; absent fields are left unchanged.
+        """
         ...
 
 

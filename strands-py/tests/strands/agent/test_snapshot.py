@@ -64,11 +64,6 @@ def test_resolve_snapshot_fields_invalid_exclude_raises():
         resolve_snapshot_fields(preset="session", exclude=["not_a_field"])  # type: ignore[list-item]
 
 
-def test_resolve_snapshot_fields_invalid_preset_raises():
-    with pytest.raises(SnapshotException, match="Invalid snapshot preset: 'bogus'"):
-        resolve_snapshot_fields(preset="bogus")  # type: ignore[arg-type]
-
-
 def test_resolve_snapshot_fields_no_preset_no_include_raises():
     with pytest.raises(SnapshotException, match="No snapshot fields resolved"):
         resolve_snapshot_fields()

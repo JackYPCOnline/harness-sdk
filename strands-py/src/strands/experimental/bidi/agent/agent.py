@@ -424,8 +424,12 @@ class BidiAgent(LocalAgent):
             A Snapshot containing the captured agent state.
 
         Raises:
-            SnapshotException: If no fields are resolved or a field is invalid or unsupported.
+            SnapshotException: If no fields are resolved or the preset or a field is invalid or unsupported.
         """
+        if preset is not None and preset not in BIDI_SNAPSHOT_PRESETS:
+            raise SnapshotException(
+                f"Invalid snapshot preset: {preset!r}. Valid presets: {sorted(BIDI_SNAPSHOT_PRESETS)}"
+            )
         fields = resolve_snapshot_fields(
             preset=preset,
             include=include,
@@ -440,6 +444,8 @@ class BidiAgent(LocalAgent):
         if "state" in fields:
             data["state"] = self.state.get()
         if "system_prompt" in fields:
+            # Store the content-block representation so round-trips preserve caching hints and
+            # other block-level metadata.
             data["system_prompt"] = copy.deepcopy(self._system_prompt_content)
 
         return Snapshot(
@@ -459,8 +465,8 @@ class BidiAgent(LocalAgent):
             snapshot: The snapshot to restore from.
 
         Raises:
-            RuntimeError: If the agent is started.
-            SnapshotException: If snapshot.schema_version is not "1.0" or the scope is invalid.
+            SnapshotException: If snapshot.schema_version is not "1.0" or snapshot.scope is not "agent".
+            RuntimeError: If the agent is started or a lifecycle operation is in progress.
         """
         if self._started or self._active_lifecycle_operations:
             raise RuntimeError("agent active | call stop before loading a snapshot")
@@ -471,7 +477,7 @@ class BidiAgent(LocalAgent):
         data = snapshot.data
 
         if "messages" in data:
-            self.messages = copy.deepcopy(data["messages"])
+            self.messages[:] = copy.deepcopy(data["messages"])
         if "state" in data:
             self.state = AgentState(data["state"])
         if "system_prompt" in data:
