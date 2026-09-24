@@ -200,7 +200,6 @@ class BidiAgent(LocalAgent):
 
         # Lock to ensure that paired messages are added to history in sequence without interference
         self._message_lock = asyncio.Lock()
-        self._active_lifecycle_operations = 0
 
         self._started = False
 
@@ -313,13 +312,9 @@ class BidiAgent(LocalAgent):
         if self._started:
             raise RuntimeError("agent already started | call stop before starting again")
 
-        self._active_lifecycle_operations += 1
-        try:
-            logger.debug("agent starting")
-            await self._loop.start(invocation_state)
-            self._started = True
-        finally:
-            self._active_lifecycle_operations -= 1
+        logger.debug("agent starting")
+        await self._loop.start(invocation_state)
+        self._started = True
 
     async def send(self, input_data: BidiAgentInput) -> None:
         """Send content to the model.
@@ -393,12 +388,8 @@ class BidiAgent(LocalAgent):
         Terminates the streaming connection, cancels background tasks, and
         closes the connection to the model provider.
         """
-        self._active_lifecycle_operations += 1
-        try:
-            self._started = False
-            await self._loop.stop()
-        finally:
-            self._active_lifecycle_operations -= 1
+        self._started = False
+        await self._loop.stop()
 
     def take_snapshot(
         self,
@@ -466,10 +457,10 @@ class BidiAgent(LocalAgent):
 
         Raises:
             SnapshotException: If snapshot.schema_version is not "1.0" or snapshot.scope is not "agent".
-            RuntimeError: If the agent is started or a lifecycle operation is in progress.
+            RuntimeError: If the agent is started.
         """
-        if self._started or self._active_lifecycle_operations:
-            raise RuntimeError("agent active | call stop before loading a snapshot")
+        if self._started:
+            raise RuntimeError("agent started | call stop before loading a snapshot")
         snapshot.validate()
         if snapshot.scope != "agent":
             raise SnapshotException(f"Expected snapshot scope 'agent', got {snapshot.scope!r}")
@@ -594,6 +585,5 @@ class BidiAgent(LocalAgent):
         async with self._message_lock:
             for message in messages:
                 _ensure_tracking_id(message)
-            self.messages.extend(messages)
-            for message in messages:
+                self.messages.append(message)
                 await self.hooks.invoke_callbacks_async(MessageAddedEvent[LocalAgent](agent=self, message=message))

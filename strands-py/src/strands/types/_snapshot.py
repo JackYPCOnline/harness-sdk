@@ -100,15 +100,6 @@ class Snapshot:
         return snapshot
 
 
-def _validate_snapshot_fields(
-    fields: list[SnapshotField] | None,
-    valid_fields: set[SnapshotField],
-) -> None:
-    for snapshot_field in fields or []:
-        if snapshot_field not in valid_fields:
-            raise SnapshotException(f"Invalid snapshot field: {snapshot_field!r}. Valid fields: {sorted(valid_fields)}")
-
-
 def resolve_snapshot_fields(
     *,
     preset: SnapshotPreset | None = None,
@@ -121,24 +112,32 @@ def resolve_snapshot_fields(
 
     Applies: preset → include → exclude (in that order).
 
-    Args:
-        preset: Named preset to start from.
-        include: Fields to add after the preset.
-        exclude: Fields to remove after preset and include.
-        valid_fields: Fields the caller supports.
-        presets: Preset definitions the caller supports.
-
     Raises:
-        KeyError: If the preset is not defined.
         SnapshotException: If any field name is invalid or the resolved set is empty.
     """
-    valid_fields_set = set(valid_fields)
-    _validate_snapshot_fields(include, valid_fields_set)
-    _validate_snapshot_fields(exclude, valid_fields_set)
+    valid = set(valid_fields)
 
-    fields = set(presets[preset]) if preset is not None else set()
-    fields.update(include or [])
-    fields.difference_update(exclude or [])
+    # Validate include/exclude field names
+    for f in include or []:
+        if f not in valid:
+            raise SnapshotException(f"Invalid snapshot field: {f!r}. Valid fields: {sorted(valid)}")
+    for f in exclude or []:
+        if f not in valid:
+            raise SnapshotException(f"Invalid snapshot field: {f!r}. Valid fields: {sorted(valid)}")
+
+    # Step 1: start with preset
+    if preset is not None:
+        fields: set[SnapshotField] = set(presets[preset])
+    else:
+        fields = set()
+
+    # Step 2: union with include
+    if include:
+        fields |= set(include)
+
+    # Step 3: subtract exclude
+    if exclude:
+        fields -= set(exclude)
 
     if not fields:
         raise SnapshotException(

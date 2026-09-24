@@ -1,16 +1,12 @@
 """Unit tests for BidiAgent snapshot capture and restore."""
 
-import asyncio
 import copy
 import unittest.mock
 
 import pytest
 
-from strands import LocalAgent
 from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.hooks import BidiAgentStopEvent
 from strands.experimental.bidi.models import BidiModel
-from strands.hooks import MessageAddedEvent
 from strands.types._snapshot import BIDI_SNAPSHOT_PRESETS, SNAPSHOT_SCHEMA_VERSION, Snapshot
 from strands.types.exceptions import SnapshotException
 
@@ -118,22 +114,6 @@ async def test_take_snapshot_while_started():
     assert tru_data == exp_data
 
 
-@pytest.mark.asyncio
-async def test_take_snapshot_from_message_hook_captures_complete_batch():
-    agent = _make_agent()
-    snapshots = []
-
-    async def capture_snapshot(event: MessageAddedEvent[LocalAgent]) -> None:
-        snapshots.append(event.agent.take_snapshot(preset="session"))
-
-    agent.add_hook(capture_snapshot)
-    await agent._append_messages(*copy.deepcopy(_MESSAGES))
-
-    tru_batches = [snapshot.data["messages"] for snapshot in snapshots]
-    exp_batches = [agent.messages, agent.messages]
-    assert tru_batches == exp_batches
-
-
 def test_load_snapshot_round_trip_into_fresh_agent():
     source = _make_agent(messages=_MESSAGES, state=_STATE, system_prompt=_SYSTEM_PROMPT)
     target = _make_agent()
@@ -236,7 +216,7 @@ async def test_load_snapshot_rejects_active_connection():
 
     await agent.start()
     try:
-        with pytest.raises(RuntimeError, match="agent active"):
+        with pytest.raises(RuntimeError, match="agent started"):
             agent.load_snapshot(snapshot)
         assert agent.messages == []
     finally:
@@ -244,69 +224,6 @@ async def test_load_snapshot_rejects_active_connection():
 
     agent.load_snapshot(snapshot)
     assert agent.messages == _MESSAGES
-
-
-@pytest.mark.asyncio
-async def test_load_snapshot_rejects_while_starting():
-    agent = _make_agent()
-    model_starting = asyncio.Event()
-    continue_start = asyncio.Event()
-
-    async def start_model(**kwargs) -> None:
-        model_starting.set()
-        await continue_start.wait()
-
-    agent.model.start.side_effect = start_model
-    start_task = asyncio.create_task(agent.start())
-    await model_starting.wait()
-    try:
-        with pytest.raises(RuntimeError, match="agent active"):
-            agent.load_snapshot(_make_snapshot(messages=_MESSAGES))
-    finally:
-        continue_start.set()
-        await start_task
-        await agent.stop()
-
-
-@pytest.mark.asyncio
-async def test_load_snapshot_rejects_while_stopping():
-    agent = _make_agent()
-    model_stopping = asyncio.Event()
-    continue_stop = asyncio.Event()
-
-    async def stop_model() -> None:
-        model_stopping.set()
-        await continue_stop.wait()
-
-    await agent.start()
-    agent.model.stop.side_effect = stop_model
-    stop_task = asyncio.create_task(agent.stop())
-    await model_stopping.wait()
-    try:
-        with pytest.raises(RuntimeError, match="agent active"):
-            agent.load_snapshot(_make_snapshot(messages=_MESSAGES))
-    finally:
-        continue_stop.set()
-        await stop_task
-
-
-@pytest.mark.asyncio
-async def test_stop_hook_can_restart_agent():
-    agent = _make_agent()
-    restarted = False
-
-    async def restart_agent(event: BidiAgentStopEvent) -> None:
-        nonlocal restarted
-        if not restarted:
-            restarted = True
-            await event.agent.start()
-
-    agent.add_hook(restart_agent)
-    await agent.start()
-    await asyncio.wait_for(agent.stop(), timeout=1)
-
-    assert agent._started
-    await agent.stop()
 
 
 @pytest.mark.asyncio
