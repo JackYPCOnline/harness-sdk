@@ -37,6 +37,12 @@ SNAPSHOT_PRESETS: dict[str, tuple[SnapshotField, ...]] = {
     "session": ("messages", "state", "conversation_manager_state", "interrupt_state", "model_state"),
 }
 
+BIDI_SNAPSHOT_FIELDS: tuple[SnapshotField, ...] = ("messages", "state", "system_prompt")
+
+BIDI_SNAPSHOT_PRESETS: dict[str, tuple[SnapshotField, ...]] = {
+    "session": ("messages", "state"),
+}
+
 
 @dataclass
 class Snapshot:
@@ -99,15 +105,27 @@ def resolve_snapshot_fields(
     preset: SnapshotPreset | None = None,
     include: list[SnapshotField] | None = None,
     exclude: list[SnapshotField] | None = None,
+    valid_fields: tuple[SnapshotField, ...] = ALL_SNAPSHOT_FIELDS,
+    presets: dict[str, tuple[SnapshotField, ...]] = SNAPSHOT_PRESETS,
 ) -> set[SnapshotField]:
     """Resolve the set of fields to capture based on options.
 
     Applies: preset → include → exclude (in that order).
 
+    Args:
+        preset: Named preset to start from.
+        include: Fields to add after the preset.
+        exclude: Fields to remove after preset and include.
+        valid_fields: Fields the caller supports.
+        presets: Preset definitions the caller supports.
+
     Raises:
-        SnapshotException: If any field name is invalid or the resolved set is empty.
+        SnapshotException: If the preset or any field name is invalid, or the resolved set is empty.
     """
-    valid = set(ALL_SNAPSHOT_FIELDS)
+    if preset is not None and preset not in presets:
+        raise SnapshotException(f"Invalid snapshot preset: {preset!r}. Valid presets: {sorted(presets)}")
+
+    valid = set(valid_fields)
 
     # Validate include/exclude field names
     for f in include or []:
@@ -119,7 +137,7 @@ def resolve_snapshot_fields(
 
     # Step 1: start with preset
     if preset is not None:
-        fields: set[SnapshotField] = set(SNAPSHOT_PRESETS[preset])
+        fields: set[SnapshotField] = set(presets[preset])
     else:
         fields = set()
 

@@ -64,6 +64,11 @@ def test_resolve_snapshot_fields_invalid_exclude_raises():
         resolve_snapshot_fields(preset="session", exclude=["not_a_field"])  # type: ignore[list-item]
 
 
+def test_resolve_snapshot_fields_invalid_preset_raises():
+    with pytest.raises(SnapshotException, match="Invalid snapshot preset: 'bogus'"):
+        resolve_snapshot_fields(preset="bogus")  # type: ignore[arg-type]
+
+
 def test_resolve_snapshot_fields_no_preset_no_include_raises():
     with pytest.raises(SnapshotException, match="No snapshot fields resolved"):
         resolve_snapshot_fields()
@@ -86,6 +91,20 @@ def test_resolve_snapshot_fields_exclude_removes_from_preset():
 def test_resolve_snapshot_fields_all_excluded_raises():
     with pytest.raises(SnapshotException):
         resolve_snapshot_fields(exclude=list(ALL_SNAPSHOT_FIELDS))  # type: ignore[list-item]
+
+
+def test_resolve_snapshot_fields_custom_valid_fields_and_presets():
+    valid_fields = ("messages", "state")
+    presets = {"session": ("messages",)}
+
+    tru_fields = resolve_snapshot_fields(
+        preset="session", include=["state"], valid_fields=valid_fields, presets=presets
+    )
+    exp_fields = {"messages", "state"}
+    assert tru_fields == exp_fields
+
+    with pytest.raises(SnapshotException, match="Invalid snapshot field: 'model_state'"):
+        resolve_snapshot_fields(include=["model_state"], valid_fields=valid_fields, presets=presets)
 
 
 _ORDERING_CASES = [
@@ -349,6 +368,14 @@ def test_load_snapshot_rejects_invalid_scope():
     snap = _make_snapshot(scope="unknown")
     with pytest.raises(SnapshotException, match="Invalid snapshot scope"):
         agent.load_snapshot(snap)
+
+
+def test_load_snapshot_rejects_multi_agent_scope():
+    agent = _make_agent()
+    snapshot = _make_snapshot(scope="multiAgent", data={"state": {"node": "n-1"}})
+
+    with pytest.raises(SnapshotException, match="Expected snapshot scope 'agent'"):
+        agent.load_snapshot(snapshot)
 
 
 def test_take_snapshot_always_produces_agent_scope():

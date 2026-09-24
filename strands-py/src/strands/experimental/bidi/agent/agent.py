@@ -14,6 +14,7 @@ Key capabilities:
 """
 
 import asyncio
+import copy
 import logging
 import uuid
 from collections.abc import AsyncGenerator
@@ -31,6 +32,15 @@ from ....tools.executors._executor import ToolExecutor
 from ....tools.registry import ToolRegistry
 from ....tools.tool_provider import ToolProvider
 from ....tools.watcher import ToolWatcher
+from ....types._snapshot import (
+    BIDI_SNAPSHOT_FIELDS,
+    BIDI_SNAPSHOT_PRESETS,
+    SNAPSHOT_SCHEMA_VERSION,
+    Snapshot,
+    SnapshotField,
+    SnapshotPreset,
+    resolve_snapshot_fields,
+)
 from ....types.agent import LocalAgent
 from ....types.content import (
     Message,
@@ -40,6 +50,7 @@ from ....types.content import (
     _ensure_tracking_id,
     split_system_prompt,
 )
+from ....types.exceptions import SnapshotException
 from ....types.media import ImageBlock
 from ....types.tools import AgentTool
 from .._async import _TaskGroup, stop_all
@@ -189,6 +200,7 @@ class BidiAgent(LocalAgent):
 
         # Lock to ensure that paired messages are added to history in sequence without interference
         self._message_lock = asyncio.Lock()
+        self._active_lifecycle_operations = 0
 
         self._started = False
 
@@ -301,9 +313,13 @@ class BidiAgent(LocalAgent):
         if self._started:
             raise RuntimeError("agent already started | call stop before starting again")
 
-        logger.debug("agent starting")
-        await self._loop.start(invocation_state)
-        self._started = True
+        self._active_lifecycle_operations += 1
+        try:
+            logger.debug("agent starting")
+            await self._loop.start(invocation_state)
+            self._started = True
+        finally:
+            self._active_lifecycle_operations -= 1
 
     async def send(self, input_data: BidiAgentInput) -> None:
         """Send content to the model.
@@ -377,8 +393,89 @@ class BidiAgent(LocalAgent):
         Terminates the streaming connection, cancels background tasks, and
         closes the connection to the model provider.
         """
-        self._started = False
-        await self._loop.stop()
+        self._active_lifecycle_operations += 1
+        try:
+            self._started = False
+            await self._loop.stop()
+        finally:
+            self._active_lifecycle_operations -= 1
+
+    def take_snapshot(
+        self,
+        *,
+        preset: SnapshotPreset | None = None,
+        include: list[SnapshotField] | None = None,
+        exclude: list[SnapshotField] | None = None,
+        app_data: dict[str, Any] | None = None,
+    ) -> Snapshot:
+        """Capture current agent state as an in-memory snapshot.
+
+        Captures committed conversation history and application state. Live connection
+        state, in-progress responses, and pending tool calls are not included.
+
+        Args:
+            preset: Named preset of fields to capture. Currently only "session" is supported,
+                which captures messages and state.
+            include: Additional fields to capture on top of the preset. Supports system_prompt.
+            exclude: Fields to remove after applying preset and include.
+            app_data: Application-owned arbitrary JSON stored verbatim in the snapshot.
+
+        Returns:
+            A Snapshot containing the captured agent state.
+
+        Raises:
+            SnapshotException: If no fields are resolved or a field is invalid or unsupported.
+        """
+        fields = resolve_snapshot_fields(
+            preset=preset,
+            include=include,
+            exclude=exclude,
+            valid_fields=BIDI_SNAPSHOT_FIELDS,
+            presets=BIDI_SNAPSHOT_PRESETS,
+        )
+
+        data: dict[str, Any] = {}
+        if "messages" in fields:
+            data["messages"] = copy.deepcopy(self.messages)
+        if "state" in fields:
+            data["state"] = self.state.get()
+        if "system_prompt" in fields:
+            data["system_prompt"] = copy.deepcopy(self._system_prompt_content)
+
+        return Snapshot(
+            scope="agent",
+            schema_version=SNAPSHOT_SCHEMA_VERSION,
+            data=data,
+            app_data=copy.deepcopy(app_data) if app_data else {},
+        )
+
+    def load_snapshot(self, snapshot: Snapshot) -> None:
+        """Restore agent state from a previously captured snapshot.
+
+        Only fields present in snapshot.data are restored; absent fields are left unchanged.
+        The restored history is sent to the model on the next start().
+
+        Args:
+            snapshot: The snapshot to restore from.
+
+        Raises:
+            RuntimeError: If the agent is started.
+            SnapshotException: If snapshot.schema_version is not "1.0" or the scope is invalid.
+        """
+        if self._started or self._active_lifecycle_operations:
+            raise RuntimeError("agent active | call stop before loading a snapshot")
+        snapshot.validate()
+        if snapshot.scope != "agent":
+            raise SnapshotException(f"Expected snapshot scope 'agent', got {snapshot.scope!r}")
+
+        data = snapshot.data
+
+        if "messages" in data:
+            self.messages = copy.deepcopy(data["messages"])
+        if "state" in data:
+            self.state = AgentState(data["state"])
+        if "system_prompt" in data:
+            self.system_prompt = copy.deepcopy(data["system_prompt"])
 
     async def __aenter__(self, invocation_state: dict[str, Any] | None = None) -> "BidiAgent":
         """Async context manager entry point.
@@ -491,5 +588,6 @@ class BidiAgent(LocalAgent):
         async with self._message_lock:
             for message in messages:
                 _ensure_tracking_id(message)
-                self.messages.append(message)
+            self.messages.extend(messages)
+            for message in messages:
                 await self.hooks.invoke_callbacks_async(MessageAddedEvent[LocalAgent](agent=self, message=message))
