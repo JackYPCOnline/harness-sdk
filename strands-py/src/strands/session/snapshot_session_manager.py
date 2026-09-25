@@ -488,7 +488,13 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
             The new immutable snapshot id, ready to pass to :meth:`restore_snapshot`, or ``None``
             when ``is_latest=True`` (``snapshot_latest`` is not addressed by id).
         """
-        return await self._save(agent, is_latest=is_latest)
+        snapshot = self._capture(agent)
+        await self._include_stash_data(agent, snapshot)
+        data = _serialize_snapshot(snapshot)
+        snapshot_id = None if is_latest else _new_snapshot_id()
+        key = _snapshot_key(self.session_id, agent.agent_id, snapshot_id=snapshot_id)
+        await self._resolved_storage.write(key, data)
+        return snapshot_id
 
     async def delete_session(self) -> None:
         """Delete all snapshots and stash data for this session."""
@@ -540,19 +546,9 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
         await self._restore_stash_data(agent, snapshot)
         return True
 
-    async def _save(self, agent: LocalAgent, *, is_latest: bool) -> str | None:
-        """Capture the agent and write either ``snapshot_latest`` or a new immutable snapshot."""
-        snapshot = self._capture(agent)
-        await self._include_stash_data(agent, snapshot)
-        data = _serialize_snapshot(snapshot)
-        snapshot_id = None if is_latest else _new_snapshot_id()
-        key = _snapshot_key(self.session_id, agent.agent_id, snapshot_id=snapshot_id)
-        await self._resolved_storage.write(key, data)
-        return snapshot_id
-
     async def _save_latest(self, agent: LocalAgent) -> None:
         """Capture the agent and overwrite ``snapshot_latest``."""
-        await self._save(agent, is_latest=True)
+        await self.save_snapshot(agent, is_latest=True)
 
     async def _save_immutable_and_latest(self, agent: LocalAgent) -> None:
         """Capture once and write the immutable snapshot, then ``snapshot_latest``.
