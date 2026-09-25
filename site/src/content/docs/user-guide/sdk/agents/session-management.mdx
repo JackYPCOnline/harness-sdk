@@ -233,7 +233,7 @@ session_manager = SnapshotSessionManager(
 agent = Agent(session_manager=session_manager)
 ```
 
-The repository-based managers cover Graph, Swarm, and existing repository-format sessions. They configure storage directly rather than through a `Storage` backend:
+The repository-based managers cover Graph, Swarm, bidirectional streaming, and existing repository-format sessions. They configure storage directly rather than through a `Storage` backend:
 
 | Session Manager | Persistence | Best for |
 |-----------------|-------------|----------|
