@@ -14,7 +14,7 @@ from strands.agent import AgentResult
 from strands.agent.agent import Agent
 from strands.agent.conversation_manager.sliding_window_conversation_manager import SlidingWindowConversationManager
 from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.hooks import BidiAgentStopEvent, BidiResponseCompleteEvent
+from strands.experimental.bidi.hooks import BidiAgentStopEvent, BidiResponseStopEvent
 from strands.experimental.bidi.models import BidiModel
 from strands.hooks.events import (
     AfterMultiAgentInvocationEvent,
@@ -1332,7 +1332,7 @@ def test_bidi_agent_registers_stop_hook_not_response_hook(storage):
     agent = _bidi_agent(SnapshotSessionManager("s1", storage=storage))
 
     assert BidiAgentStopEvent in agent.hooks._registered_callbacks
-    assert BidiResponseCompleteEvent not in agent.hooks._registered_callbacks
+    assert BidiResponseStopEvent not in agent.hooks._registered_callbacks
 
 
 @pytest.mark.asyncio
