@@ -407,7 +407,7 @@ class BidiAgent(LocalAgent):
         Args:
             preset: Named preset of fields to capture. Currently only "session" is supported,
                 which captures messages and state.
-            include: Additional fields to capture on top of the preset. Supports system_prompt.
+            include: Additional fields to capture on top of the preset.
             exclude: Fields to remove after applying preset and include.
             app_data: Application-owned arbitrary JSON stored verbatim in the snapshot.
 
@@ -445,8 +445,9 @@ class BidiAgent(LocalAgent):
     def load_snapshot(self, snapshot: Snapshot) -> None:
         """Restore agent state from a previously captured snapshot.
 
-        Only fields present in snapshot.data are restored; absent fields are left unchanged.
-        The restored history is sent to the model on the next start().
+        Only fields present in snapshot.data are restored; absent fields are left unchanged and
+        fields this agent does not support are ignored. The restored history is sent to the model
+        on the next start().
 
         Args:
             snapshot: The snapshot to restore from.
@@ -464,7 +465,7 @@ class BidiAgent(LocalAgent):
         data = snapshot.data
 
         if "messages" in data:
-            self.messages[:] = copy.deepcopy(data["messages"])
+            self.messages = copy.deepcopy(data["messages"])
         if "state" in data:
             self.state = AgentState(data["state"])
         if "system_prompt" in data:

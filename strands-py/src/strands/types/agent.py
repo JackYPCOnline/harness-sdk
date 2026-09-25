@@ -95,7 +95,11 @@ class LocalAgent(Protocol):
         exclude: list[SnapshotField] | None = None,
         app_data: dict[str, Any] | None = None,
     ) -> Snapshot:
-        """Capture current agent state as an in-memory snapshot."""
+        """Capture current agent state as an in-memory snapshot.
+
+        The fields a preset captures, and the fields accepted by include and exclude, are
+        implementation-defined.
+        """
         ...
 
     def load_snapshot(self, snapshot: Snapshot) -> None:

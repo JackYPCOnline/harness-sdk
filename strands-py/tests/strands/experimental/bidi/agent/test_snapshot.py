@@ -71,6 +71,14 @@ def test_take_snapshot_rejects_unsupported_field(field, option):
         agent.take_snapshot(preset="session", **{option: [field]})
 
 
+@pytest.mark.parametrize("options", [{}, {"preset": "session", "exclude": ["messages", "state"]}])
+def test_take_snapshot_rejects_empty_field_set(options):
+    agent = _make_agent()
+
+    with pytest.raises(SnapshotException, match="No snapshot fields resolved"):
+        agent.take_snapshot(**options)
+
+
 def test_take_snapshot_app_data_stored_verbatim():
     agent = _make_agent()
     app_data = {"checkpoint": "before-tool", "nested": {"k": [1, 2]}}
@@ -167,15 +175,13 @@ def test_load_snapshot_ignores_agent_only_fields():
 
 
 def test_load_snapshot_restores_independent_copies():
-    caller_messages = []
-    target = _make_agent(messages=caller_messages)
+    target = _make_agent()
     snapshot = _make_snapshot(messages=_MESSAGES, system_prompt=_SYSTEM_PROMPT)
 
     target.load_snapshot(snapshot)
     snapshot.data["messages"].append({"role": "user", "content": [{"text": "extra"}]})
     snapshot.data["system_prompt"].append({"text": "extra"})
 
-    assert target.messages is caller_messages
     assert target.messages == _MESSAGES
     assert target.system_prompt_content == _SYSTEM_PROMPT
 
