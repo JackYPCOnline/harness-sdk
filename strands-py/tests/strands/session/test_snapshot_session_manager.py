@@ -1536,6 +1536,24 @@ async def test_bidi_agent_restore_warns_on_overwrite(storage, caplog):
     assert "overwritten by session restore" in caplog.text
 
 
+def test_agent_falls_back_to_local_file_storage(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    agent = Agent(model=_model("reply"), session_manager=SnapshotSessionManager("s1"), agent_id="a1")
+    agent("hello")
+
+    agent_2 = Agent(model=_model("x"), session_manager=SnapshotSessionManager("s1"), agent_id="a1")
+    assert _texts(agent_2) == ["hello", "reply"]
+
+
+def test_agent_resolves_agent_level_storage(storage):
+    agent = Agent(model=_model("reply"), storage=storage, session_manager=SnapshotSessionManager("s1"), agent_id="a1")
+    agent("hello")
+
+    assert asyncio.run(storage.read(_on_disk_key("s1", "a1"))) is not None
+    agent_2 = Agent(model=_model("x"), storage=storage, session_manager=SnapshotSessionManager("s1"), agent_id="a1")
+    assert _texts(agent_2) == ["hello", "reply"]
+
+
 @pytest.mark.asyncio
 async def test_bidi_agent_falls_back_to_local_file_storage(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
