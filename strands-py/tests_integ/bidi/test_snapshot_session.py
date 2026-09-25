@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from strands import tool
+from strands import LocalAgent, tool
 from strands.experimental.bidi.agent import BidiAgent
 from strands.session import SnapshotSessionManager
 from strands.storage import LocalFileStorage
@@ -30,13 +30,15 @@ def _texts(agent: BidiAgent) -> list[str]:
 async def test_bidi_agent_direct_tool_call_with_snapshot_session(weather_tool, tmp_path):
     session_id = str(uuid4())
     storage = LocalFileStorage(tmp_path)
-    manager = SnapshotSessionManager(session_id, storage=storage, snapshot_trigger=lambda *, agent_data, **_: True)
+    manager = SnapshotSessionManager[LocalAgent](
+        session_id, storage=storage, snapshot_trigger=lambda *, agent_data, **_: True
+    )
     agent = BidiAgent(record_direct_tool_call=True, tools=[weather_tool], session_manager=manager)
     agent.state.set("city", "new york")
     agent.tool.weather_tool(city_name="new york")
     await agent.stop()
 
-    restored_manager = SnapshotSessionManager(session_id, storage=storage)
+    restored_manager = SnapshotSessionManager[LocalAgent](session_id, storage=storage)
     restored_agent = BidiAgent(record_direct_tool_call=True, tools=[weather_tool], session_manager=restored_manager)
 
     tru_state = restored_agent.state.get()
