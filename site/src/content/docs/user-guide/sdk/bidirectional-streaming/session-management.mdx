@@ -149,9 +149,9 @@ await agent.start()
 await agent.send("Let's plan a trip to Lisbon")
 await agent.stop()
 
-# Rewind to the checkpoint written at that stop
+# Rewind to the most recent checkpoint; ids are ordered oldest first
 snapshot_ids = await session_manager.list_snapshot_ids(agent)
-await session_manager.restore_snapshot(agent, snapshot_id=snapshot_ids[0])
+await session_manager.restore_snapshot(agent, snapshot_id=snapshot_ids[-1])
 await agent.start()  # Replays the restored history into a new connection
 await agent.stop()
 ```
