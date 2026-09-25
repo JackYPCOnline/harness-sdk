@@ -126,9 +126,9 @@ opens the model connection, and captures a new one when `stop()` completes. The 
 model response is not a save point: a streaming session spans many responses, so the
 manager saves on `BidiAgentStopEvent`, not `BidiResponseStopEvent`.
 
-`SnapshotSessionManager` is typed for `Agent` by default. Write
-`SnapshotSessionManager[LocalAgent]` for a manager that attaches to a `BidiAgent`, or pass
-a `snapshot_trigger` whose `agent_data` is annotated `LocalAgent` and the type is inferred.
+`SnapshotSessionManager` defaults to `Agent`. Subscript it as
+`SnapshotSessionManager[LocalAgent]` to attach it to a `BidiAgent`; a `snapshot_trigger`
+whose `agent_data` is annotated `LocalAgent` infers the same type.
 
 To keep a checkpoint at each stop, pass a `snapshot_trigger`. Restore a checkpoint with
 `restore_snapshot` while the agent is stopped; restoring a started agent raises
