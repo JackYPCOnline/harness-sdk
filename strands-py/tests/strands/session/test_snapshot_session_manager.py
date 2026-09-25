@@ -1537,8 +1537,8 @@ async def test_bidi_agent_restore_warns_on_overwrite(storage, caplog):
 
 
 @pytest.mark.asyncio
-async def test_bidi_agent_falls_back_to_local_file_storage(monkeypatch, temp_dir):
-    monkeypatch.chdir(temp_dir)
+async def test_bidi_agent_falls_back_to_local_file_storage(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     manager = SnapshotSessionManager("s1")
     agent = _bidi_agent(manager)
     await agent._append_messages({"role": "user", "content": [{"text": "hello"}]})
