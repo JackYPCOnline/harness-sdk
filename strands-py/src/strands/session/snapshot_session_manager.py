@@ -24,8 +24,6 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Literal, Protocol, get_args, runtime_checkable
 
-from typing_extensions import TypeVar
-
 from .._async import run_async
 from .._identifier import Identifier, is_uuid7
 from .._identifier import new_uuid7 as _new_snapshot_id
@@ -52,13 +50,9 @@ from .session_manager import SessionManager
 
 if TYPE_CHECKING:
     from .._context_manager.stash import Stash
-    from ..agent.agent import Agent
     from ..multiagent.base import MultiAgentBase
 
 logger = logging.getLogger(__name__)
-
-_TriggerAgentT = TypeVar("_TriggerAgentT", bound=LocalAgent, default="Agent", contravariant=True)
-_SnapshotAgentT = TypeVar("_SnapshotAgentT", bound=LocalAgent, default=LocalAgent, contravariant=True)
 
 SaveLatestStrategy = Literal["message", "invocation", "trigger"]
 """Controls how often ``snapshot_latest`` is saved automatically.
@@ -189,14 +183,10 @@ def _deserialize_snapshot(data: bytes) -> Snapshot:
 
 
 @runtime_checkable
-class SnapshotTrigger(Protocol[_TriggerAgentT]):
-    """Decides whether to write an immutable checkpoint after an invocation.
+class SnapshotTrigger(Protocol):
+    """Decides whether to write an immutable checkpoint after an invocation."""
 
-    The agent type defaults to Agent. Triggers supporting both Agent and BidiAgent
-    implement SnapshotTrigger[LocalAgent].
-    """
-
-    def __call__(self, *, agent_data: _TriggerAgentT, **kwargs: Any) -> bool:
+    def __call__(self, *, agent_data: LocalAgent, **kwargs: Any) -> bool:
         """Return True to append an immutable snapshot for the given agent.
 
         Args:
@@ -209,7 +199,7 @@ class SnapshotTrigger(Protocol[_TriggerAgentT]):
         ...
 
 
-class SnapshotSessionManager(SessionManager[_SnapshotAgentT]):
+class SnapshotSessionManager(SessionManager[LocalAgent]):
     """Persists agent snapshots to a :class:`~strands.storage.storage.Storage` across invocations.
 
     On agent initialization the latest snapshot is restored automatically. On each
@@ -221,10 +211,6 @@ class SnapshotSessionManager(SessionManager[_SnapshotAgentT]):
     orchestrators are persisted latest-only: state is captured after each node (or each invocation,
     per ``multi_agent_save_latest_on``) and restored lazily on their first invocation. A BidiAgent
     is restored before its connection starts and captured when it stops.
-
-    The agent type is inferred from ``snapshot_trigger``: a trigger typed for Agent produces an
-    Agent-only manager, and a trigger typed for LocalAgent (or no trigger) produces a manager that
-    supports both Agent and BidiAgent.
 
     Example:
         ```python
@@ -244,7 +230,7 @@ class SnapshotSessionManager(SessionManager[_SnapshotAgentT]):
         storage: Storage | None = None,
         save_latest_on: SaveLatestStrategy = "invocation",
         multi_agent_save_latest_on: MultiAgentSaveLatestStrategy = "node",
-        snapshot_trigger: SnapshotTrigger[_SnapshotAgentT] | None = None,
+        snapshot_trigger: SnapshotTrigger | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the snapshot session manager.
@@ -287,9 +273,7 @@ class SnapshotSessionManager(SessionManager[_SnapshotAgentT]):
         self._storage: Storage | None = _resolve_storage(storage) if storage is not None else None
         self._save_latest_on: SaveLatestStrategy = save_latest_on
         self._multi_agent_save_latest_on: MultiAgentSaveLatestStrategy = multi_agent_save_latest_on
-        # The class type parameter pairs the trigger with the agents that may attach, so the
-        # stored trigger can be called from both the Agent and BidiAgent completion handlers.
-        self._snapshot_trigger: SnapshotTrigger[Any] | None = snapshot_trigger
+        self._snapshot_trigger = snapshot_trigger
         # Orchestrator ids restored this process, so restore runs once per orchestrator (lazily,
         # on its first invocation) rather than on every invocation.
         self._multi_agent_restored_ids: set[str] = set()
@@ -374,7 +358,7 @@ class SnapshotSessionManager(SessionManager[_SnapshotAgentT]):
 
     # -- ABC methods (invoked synchronously by the Agent; bridge to async storage) --
 
-    def initialize(self, agent: _SnapshotAgentT, **kwargs: Any) -> None:
+    def initialize(self, agent: LocalAgent, **kwargs: Any) -> None:
         """Restore the agent from its latest snapshot, if one exists.
 
         Storage is resolved on the first call and cached; a single manager instance should not be
@@ -396,7 +380,7 @@ class SnapshotSessionManager(SessionManager[_SnapshotAgentT]):
             self._agent_stash = agent.context_manager.stash
         run_async(lambda: self._initialize_async(agent))
 
-    def sync_agent(self, agent: _SnapshotAgentT, **kwargs: Any) -> None:
+    def sync_agent(self, agent: LocalAgent, **kwargs: Any) -> None:
         """Capture the agent and overwrite ``snapshot_latest``.
 
         Args:
@@ -405,7 +389,7 @@ class SnapshotSessionManager(SessionManager[_SnapshotAgentT]):
         """
         run_async(lambda: self._save_latest(agent))
 
-    def redact_latest_message(self, redact_message: Message, agent: _SnapshotAgentT, **kwargs: Any) -> None:
+    def redact_latest_message(self, redact_message: Message, agent: LocalAgent, **kwargs: Any) -> None:
         """Persist immediately after a guardrail redaction, under every strategy.
 
         The Agent has already applied the redaction to ``agent.messages[-1]`` before
@@ -423,7 +407,7 @@ class SnapshotSessionManager(SessionManager[_SnapshotAgentT]):
         """
         run_async(lambda: self._save_latest(agent))
 
-    def append_message(self, message: Message, agent: _SnapshotAgentT, **kwargs: Any) -> None:
+    def append_message(self, message: Message, agent: LocalAgent, **kwargs: Any) -> None:
         """No-op — snapshots capture the whole agent.
 
         Per-message persistence under the ``"message"`` strategy is handled by the
@@ -438,7 +422,7 @@ class SnapshotSessionManager(SessionManager[_SnapshotAgentT]):
     # -- Public time-travel API --
 
     async def list_snapshot_ids(
-        self, agent: _SnapshotAgentT, *, limit: int | None = None, start_after: str | None = None
+        self, agent: LocalAgent, *, limit: int | None = None, start_after: str | None = None
     ) -> list[str]:
         """List immutable snapshot ids for an agent, oldest first.
 
@@ -471,7 +455,7 @@ class SnapshotSessionManager(SessionManager[_SnapshotAgentT]):
             ids = ids[:limit]
         return ids
 
-    async def restore_snapshot(self, agent: _SnapshotAgentT, *, snapshot_id: str | None = None) -> bool:
+    async def restore_snapshot(self, agent: LocalAgent, *, snapshot_id: str | None = None) -> bool:
         """Restore an agent from a stored snapshot.
 
         Args:
@@ -488,7 +472,7 @@ class SnapshotSessionManager(SessionManager[_SnapshotAgentT]):
         """
         return await self._restore(agent, snapshot_id=snapshot_id)
 
-    async def save_snapshot(self, agent: _SnapshotAgentT, *, is_latest: bool) -> str | None:
+    async def save_snapshot(self, agent: LocalAgent, *, is_latest: bool) -> str | None:
         """Save a snapshot of the agent's current state on demand.
 
         Use ``is_latest=False`` to force an immutable checkpoint at an arbitrary point (independent
