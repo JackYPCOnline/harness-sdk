@@ -323,7 +323,7 @@ agent = BidiAgent(model=model)
 async with agent:
     await agent.send("Hello")
     async for event in agent.receive():
-        if isinstance(event, BidiResponseCompleteEvent):
+        if isinstance(event, BidiResponseStopEvent):
             break
 ```
 
@@ -339,7 +339,7 @@ try:
     await agent.send("Hello")
     
     async for event in agent.receive():
-        if isinstance(event, BidiResponseCompleteEvent):
+        if isinstance(event, BidiResponseStopEvent):
             break
 finally:
     await agent.stop()
@@ -391,18 +391,6 @@ model = BedrockNovaSonicModel(
 `restart_after_s` should sit at least ~10 seconds below the provider's own connection limit, because the reconnect may wait briefly for the current turn to finish before swapping. Setting `auto_reconnect=False` turns off both the proactive timer and reactive reconnect, so the connection closes at the provider's limit.
 
 ### Error Handling
-
-#### Handling Errors in Events
-
-```python
-async for event in agent.receive():
-    if isinstance(event, BidiErrorEvent):
-        print(f"Error: {event.message}")
-        # Access original exception
-        original_error = event.error
-        # Decide whether to continue or break
-        break
-```
 
 #### Handling Connection Errors
 
