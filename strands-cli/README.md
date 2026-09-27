@@ -59,6 +59,12 @@ Or run it on demand without installing, using `npx`:
 npx @strands-agents/cli
 ```
 
+Update a global installation with:
+
+```bash
+strands update
+```
+
 On the first interactive launch, the intro animation plays before the setup panel opens. Quickstart
 lets you choose providers and a model, then select tools, skills, MCP, and other capabilities before
 launching. Select or deselect all, or toggle individual capabilities. Customize setup also
@@ -92,8 +98,8 @@ compiled output and skips all source-build behavior.
 ## Customize the agent
 
 Run `strands` or use `/setup` in chat to reopen the saved configuration. Quickstart and Customize
-edit the same profile. Import loads a harness from a file or zip, and Export saves the saved agent as a
-TypeScript or Python project.
+edit the same profile. Import loads a harness from a file or zip, and Resume returns to the configured
+harness. Use `/export` in chat to save the agent as a TypeScript or Python project.
 
 In interactive chat, the agent can also inspect and change its own configuration with `strands_config`.
 For example: “Use high reasoning, disable shell and delegation, and keep responses concise.”

@@ -31,7 +31,7 @@ from ..hooks.events import (
     BidiResponseStopEvent as BidiResponseStopHookEvent,
 )
 from ..models import ConnectionTimeoutError, Restartable
-from ..types.content import BidiContentBlock, BidiContentDelta, BidiTranscriptMetadata
+from ..types.content import BidiContentDelta, BidiMessage, BidiToolMetadata, BidiTranscriptMetadata
 from ..types.events import (
     BidiAudioDeltaEvent,
     BidiBargeInEvent,
@@ -228,10 +228,11 @@ class _AgentLoop:
 
             await self._agent.hooks.invoke_callbacks_async(BidiAgentStopEvent(agent=self._agent))
 
-    async def send(self, content: BidiContentBlock | BidiContentDelta | ToolResultBlock) -> None:
-        """Send user input or a tool result to the model.
+    async def send(self, content: BidiMessage | BidiContentDelta) -> None:
+        """Send a complete message or an individual delta to the model.
 
-        Complete content blocks are also added to conversation history.
+        User messages are recorded in history. The tool runner records tool
+        results with their corresponding tool uses. Deltas are not recorded.
 
         Args:
             content: User input or tool result to send.
@@ -246,8 +247,11 @@ class _AgentLoop:
             logger.debug("waiting for model send signal")
             await self._send_gate.wait()
 
-        if isinstance(content, BidiContentBlock):
-            message: Message = {"role": "user", "content": [cast(ContentBlock, content.to_dict())]}
+        if isinstance(content, BidiMessage) and not isinstance(content.content[0], ToolResultBlock):
+            message: Message = {
+                "role": "user",
+                "content": [cast(ContentBlock, block.to_dict()) for block in content.content],
+            }
             await self._agent._append_messages(message)
 
             # Let scheduled reconnects wait for the response.
@@ -642,6 +646,26 @@ class _AgentLoop:
                         }
                     )
 
+                elif isinstance(event, ToolUseStreamEvent):
+                    tool_use = event["current_tool_use"]
+                    dispatch: ToolResult = {
+                        "toolUseId": tool_use["toolUseId"],
+                        "status": "success",
+                        "content": [{"text": "Tool call started. Its result will follow in a separate tool exchange."}],
+                    }
+                    await self._agent._append_messages(
+                        {"role": "assistant", "content": [{"toolUse": tool_use}]},
+                        {
+                            "role": "user",
+                            "content": [{"toolResult": dispatch}],
+                            "metadata": {
+                                "custom": {
+                                    "bidi": BidiToolMetadata(kind="tool_dispatch", tool_use_id=tool_use["toolUseId"])
+                                }
+                            },
+                        },
+                    )
+
                 elif isinstance(event, BidiBargeInEvent):
                     if self._session_span:
                         _telemetry.add_barge_in_event(self._session_span, event["reason"])
@@ -678,8 +702,7 @@ class _AgentLoop:
                     return
 
                 if isinstance(event, ToolUseStreamEvent):
-                    tool_use = event["current_tool_use"]
-                    self._task_pool.create(self._run_tool(tool_use, generation))
+                    self._task_pool.create(self._run_tool(event["current_tool_use"], generation))
 
         except Exception as error:
             model_error = error
@@ -752,8 +775,17 @@ class _AgentLoop:
             tool_result_event = cast(ToolResultEvent, tool_event)
             tool_result = tool_result_event.tool_result
 
-            tool_use_message: Message = {"role": "assistant", "content": [{"toolUse": tool_use}]}
-            tool_result_message: Message = {"role": "user", "content": [{"toolResult": tool_result}]}
+            tool_use_message: Message = {
+                "role": "assistant",
+                "content": [{"toolUse": tool_use}],
+            }
+            tool_result_message: Message = {
+                "role": "user",
+                "content": [{"toolResult": tool_result}],
+                "metadata": {
+                    "custom": {"bidi": BidiToolMetadata(kind="tool_result", tool_use_id=tool_use["toolUseId"])}
+                },
+            }
             await self._agent._append_messages(tool_use_message, tool_result_message)
 
             await self._event_queue.put(ToolResultMessageEvent(tool_result_message))
@@ -792,10 +824,14 @@ class _AgentLoop:
 
             # Send result to model
             await self.send(
-                ToolResultBlock(
-                    tool_use_id=tool_result["toolUseId"],
-                    status=tool_result["status"],
-                    content=tool_result["content"],
+                BidiMessage(
+                    content=[
+                        ToolResultBlock(
+                            tool_use_id=tool_result["toolUseId"],
+                            status=tool_result["status"],
+                            content=tool_result["content"],
+                        )
+                    ]
                 )
             )
 

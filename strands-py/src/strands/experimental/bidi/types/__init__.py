@@ -1,7 +1,15 @@
 """Type definitions for bidirectional streaming."""
 
 from .agent import BidiAgentInput
-from .content import BidiContentBlock, BidiContentBlockData, BidiContentDelta, BidiContentDeltaData
+from .content import (
+    BidiContentBlock,
+    BidiContentBlockData,
+    BidiContentDelta,
+    BidiContentDeltaData,
+    BidiMessage,
+    BidiUserContentBlock,
+    BidiUserContentBlockData,
+)
 from .events import (
     AudioChannel,
     AudioFormat,
@@ -42,6 +50,7 @@ __all__ = [
     "BidiConnectionStartEvent",
     "BidiConnectionStopEvent",
     "BidiConnectionWarningEvent",
+    "BidiMessage",
     "BidiOutputEvent",
     "BidiBargeInEvent",
     "BidiResponseStartEvent",
@@ -50,6 +59,8 @@ __all__ = [
     "BidiTranscriptStartEvent",
     "BidiTranscriptStopEvent",
     "BidiUsageEvent",
+    "BidiUserContentBlock",
+    "BidiUserContentBlockData",
     "InputStream",
     "ModalityUsage",
     "OutputStream",
