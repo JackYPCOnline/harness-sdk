@@ -1567,6 +1567,17 @@ async def test_bidi_agent_falls_back_to_local_file_storage(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_bidi_agent_resolves_agent_level_storage(storage):
+    agent = _bidi_agent(SnapshotSessionManager("s1"), storage=storage)
+    await agent._append_messages({"role": "user", "content": [{"text": "hello"}]})
+    await agent.hooks.invoke_callbacks_async(BidiAgentStopEvent(agent=agent))
+
+    assert await storage.read(_on_disk_key("s1", "b1")) is not None
+    agent_2 = _bidi_agent(SnapshotSessionManager("s1"), storage=storage)
+    assert _texts(agent_2) == ["hello"]
+
+
+@pytest.mark.asyncio
 async def test_bidi_agent_delete_session_removes_snapshots(storage):
     manager = SnapshotSessionManager("s1", storage=storage, snapshot_trigger=lambda *, agent_data, **_: True)
     agent = _bidi_agent(manager)

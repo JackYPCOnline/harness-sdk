@@ -371,9 +371,8 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
         """Restore the agent from its latest snapshot, if one exists.
 
         Storage is resolved on the first call and cached; a single manager instance should not be
-        shared across agents with differing storage backends. Agent-level storage and the
-        context-manager stash are Agent-only; a BidiAgent uses the constructor storage or the
-        local-file fallback.
+        shared across agents with differing storage backends. The context-manager stash is
+        Agent-only.
 
         Args:
             agent: Agent to restore.
@@ -382,7 +381,7 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
         from ..agent.agent import Agent
 
         if self._storage is None:
-            raw = agent.storage if isinstance(agent, Agent) and agent.storage is not None else LocalFileStorage()
+            raw = agent.storage if agent.storage is not None else LocalFileStorage()
             self._raw_storage = raw
             self._storage = _resolve_storage(raw)
         if isinstance(agent, Agent) and agent.context_manager is not None:
