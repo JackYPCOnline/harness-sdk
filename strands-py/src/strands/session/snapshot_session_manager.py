@@ -22,7 +22,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Literal, Protocol, final, get_args, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, get_args, runtime_checkable
 
 from .._async import run_async
 from .._identifier import Identifier, is_uuid7
@@ -201,7 +201,6 @@ class SnapshotTrigger(Protocol):
         ...
 
 
-@final
 class SnapshotSessionManager(SessionManager[LocalAgent]):
     """Persists agent snapshots to a :class:`~strands.storage.storage.Storage` across invocations.
 
