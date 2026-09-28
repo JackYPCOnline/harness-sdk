@@ -365,20 +365,17 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
         """Restore the agent from its latest snapshot, if one exists.
 
         Storage is resolved on the first call and cached; a single manager instance should not be
-        shared across agents with differing storage backends. The context-manager stash is
-        Agent-only.
+        shared across agents with differing storage backends.
 
         Args:
             agent: Agent to restore.
             **kwargs: Additional keyword arguments for future extensibility.
         """
-        from ..agent.agent import Agent
-
         if self._storage is None:
             raw = agent.storage if agent.storage is not None else LocalFileStorage()
             self._raw_storage = raw
             self._storage = _resolve_storage(raw)
-        if isinstance(agent, Agent) and agent.context_manager is not None:
+        if agent.context_manager is not None:
             self._agent_stash = agent.context_manager.stash
         run_async(lambda: self._initialize_async(agent))
 
@@ -515,8 +512,6 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
 
     async def _initialize_async(self, agent: LocalAgent) -> None:
         """Restore latest snapshot on init, warning on overwrite and handling stateful models."""
-        from ..agent.agent import Agent
-
         had_messages = len(agent.messages) > 0
         restored = await self._restore(agent)
 
@@ -529,7 +524,7 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
 
         # Stateful models manage history server-side, so restored messages would drift
         # from the server's view. Keep the restored model_state and drop the messages.
-        if restored and isinstance(agent, Agent) and agent.model.stateful and len(agent.messages) > 0:
+        if restored and agent.model.stateful and len(agent.messages) > 0:
             logger.warning(
                 "agent_id=<%s>, message_count=<%s> | discarding restored messages for stateful model",
                 agent.agent_id,
@@ -633,10 +628,6 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
         Raises on failure so the caller never persists a snapshot with missing stash data
         while the agent messages still carry ``[ref: ...]`` placeholders.
         """
-        from ..agent.agent import Agent
-
-        if not isinstance(agent, Agent):
-            return
         context_manager = agent.context_manager
         if context_manager is None or context_manager.stash is None:
             return
@@ -660,10 +651,8 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
 
         Storage errors are logged and swallowed so a stash failure never prevents session restore.
         """
-        from ..agent.agent import Agent
-
         stash_data = snapshot.data.get("stash")
-        if stash_data is None or not isinstance(agent, Agent):
+        if stash_data is None:
             return
 
         context_manager = agent.context_manager

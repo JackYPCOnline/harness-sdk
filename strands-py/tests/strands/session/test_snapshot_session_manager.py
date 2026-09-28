@@ -1309,6 +1309,7 @@ class TestSnapshotStashIntegration:
 def _bidi_model() -> AsyncMock:
     model = AsyncMock(spec=BidiModel)
     model.get_connection_config.return_value = {}
+    model.stateful = False
     return model
 
 
