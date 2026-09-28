@@ -1390,16 +1390,25 @@ async def test_bidi_agent_invocation_strategy_saves_once_at_stop(temp_dir):
 
 
 @pytest.mark.asyncio
-async def test_bidi_agent_message_strategy_saves_each_message_and_at_stop(temp_dir):
+async def test_bidi_agent_message_strategy_saves_message_replacements_and_at_stop(temp_dir):
     storage = LocalFileStorage(temp_dir)
     save_keys = _spy_writes(storage)
     agent = _bidi_agent(SnapshotSessionManager("s1", storage=storage, save_latest_on="message"))
     save_keys.clear()
 
-    await agent._append_messages({"role": "user", "content": [{"text": "one"}]})
-    await agent._append_messages({"role": "assistant", "content": [{"text": "two"}]})
-    await agent.hooks.invoke_callbacks_async(BidiAgentStopEvent(agent=agent))
+    placeholder = {"role": "assistant", "content": [{"text": ""}]}
+    await agent._append_messages(placeholder)
+    replacement = {
+        "role": "assistant",
+        "content": [{"text": "complete"}],
+        "tracking_id": placeholder["tracking_id"],
+    }
+    await agent._update_message(replacement)
 
+    restored = _bidi_agent(SnapshotSessionManager("s1", storage=storage, save_latest_on="message"))
+    assert _texts(restored) == ["complete"]
+
+    await agent.hooks.invoke_callbacks_async(BidiAgentStopEvent(agent=agent))
     assert save_keys == [_on_disk_key("s1", "b1")] * 3
 
 
@@ -1463,11 +1472,17 @@ async def test_bidi_agent_raising_trigger_still_saves_latest(storage, save_lates
 
 
 @pytest.mark.asyncio
-async def test_bidi_agent_state_changed_before_stop_is_persisted(storage):
-    agent = _bidi_agent(SnapshotSessionManager("s1", storage=storage))
+async def test_bidi_agent_state_changed_by_stop_hook_is_persisted(storage):
+    class StopStateHook:
+        def register_hooks(self, registry):
+            registry.add_callback(BidiAgentStopEvent, self.on_stop)
+
+        def on_stop(self, event):
+            event.agent.state.set("turns", 1)
+
+    agent = _bidi_agent(SnapshotSessionManager("s1", storage=storage), hooks=[StopStateHook()])
     await agent.start()
     await agent.send("hello")
-    agent.state.set("turns", 1)
     await agent.stop()
 
     agent_2 = _bidi_agent(SnapshotSessionManager("s1", storage=storage))

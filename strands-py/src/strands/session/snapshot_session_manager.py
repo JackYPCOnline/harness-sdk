@@ -22,7 +22,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Literal, Protocol, get_args, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, final, get_args, runtime_checkable
 
 from .._async import run_async
 from .._identifier import Identifier, is_uuid7
@@ -36,9 +36,10 @@ from ..hooks.events import (
     AgentInitializedEvent,
     BeforeMultiAgentInvocationEvent,
     MessageAddedEvent,
+    MessageUpdatedEvent,
     MultiAgentInitializedEvent,
 )
-from ..hooks.registry import HookRegistry
+from ..hooks.registry import HookOrder, HookRegistry
 from ..storage.local_file_storage import LocalFileStorage
 from ..storage.storage import _NAMESPACED, Storage, _NamespacedStorage
 from ..types._snapshot import Snapshot
@@ -59,7 +60,8 @@ SaveLatestStrategy = Literal["message", "invocation", "trigger"]
 
 - ``"invocation"``: after every agent invocation completes, or after a BidiAgent stops (default;
   balances durability and I/O).
-- ``"message"``: after every message added, plus the completion save above (most durable, highest I/O).
+- ``"message"``: after every message addition or replacement, plus the completion save above
+  (most durable, highest I/O).
 - ``"trigger"``: only when ``snapshot_trigger`` fires (or manually via ``save_snapshot``).
 
 Guardrail redactions are flushed immediately under every strategy, including ``"trigger"``,
@@ -199,6 +201,7 @@ class SnapshotTrigger(Protocol):
         ...
 
 
+@final
 class SnapshotSessionManager(SessionManager[LocalAgent]):
     """Persists agent snapshots to a :class:`~strands.storage.storage.Storage` across invocations.
 
@@ -301,9 +304,10 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
         # The save paths run under invoke_callbacks_async, so register them as native
         # async handlers and avoid the sync bridge.
         if self._save_latest_on == "message":
-            registry.add_callback(MessageAddedEvent, self._on_message_added)
+            registry.add_callback(MessageAddedEvent, self._on_message_changed)
+            registry.add_callback(MessageUpdatedEvent, self._on_message_changed)
         registry.add_callback(AfterInvocationEvent, self._on_after_invocation)
-        registry.add_callback(BidiAgentStopEvent, self._on_bidi_agent_stop)
+        registry.add_callback(BidiAgentStopEvent, self._on_bidi_agent_stop, order=HookOrder.SDK_LAST)
 
         # An orchestrator has no AgentInitializedEvent to lazily resolve storage from, so its hooks
         # are wired at its own init event.
@@ -564,8 +568,8 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
         )
         await self._resolved_storage.write(_snapshot_key(self.session_id, agent.agent_id, snapshot_id=None), data)
 
-    async def _on_message_added(self, event: MessageAddedEvent) -> None:
-        """Save latest after each message under the ``"message"`` strategy."""
+    async def _on_message_changed(self, event: MessageAddedEvent | MessageUpdatedEvent) -> None:
+        """Save latest after each message addition or replacement under the ``"message"`` strategy."""
         await self._save_latest(event.agent)
 
     async def _on_after_invocation(self, event: AfterInvocationEvent) -> None:

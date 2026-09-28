@@ -213,13 +213,3 @@ async def snapshot_manager_method_types(manager: SnapshotSessionManager, agent: 
     await manager.save_snapshot(bidi_agent, is_latest=True)
     await manager.restore_snapshot(bidi_agent)
     await manager.list_snapshot_ids(bidi_agent)
-
-
-class SharedSnapshotSessionManager(SnapshotSessionManager):
-    def sync_agent(self, agent: LocalAgent, **kwargs: Any) -> None:
-        super().sync_agent(agent, **kwargs)
-
-
-class AgentOnlySnapshotSessionManager(SnapshotSessionManager):
-    def sync_agent(self, agent: Agent, **kwargs: Any) -> None:  # type: ignore[override]
-        super().sync_agent(agent, **kwargs)
