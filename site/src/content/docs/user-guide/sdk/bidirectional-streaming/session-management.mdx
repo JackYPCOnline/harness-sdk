@@ -100,13 +100,12 @@ Restore a voice session from its latest snapshot and capture a new one when the
 conversation ends:
 
 ```python
-from strands import LocalAgent
 from strands.experimental.bidi.agent import BidiAgent
 from strands.experimental.bidi.models import BedrockNovaSonicModel
 from strands.session import SnapshotSessionManager
 from strands.storage import LocalFileStorage
 
-session_manager = SnapshotSessionManager[LocalAgent](
+session_manager = SnapshotSessionManager(
     session_id="user_123_session",
     storage=LocalFileStorage("./sessions/"),
 )
@@ -126,22 +125,17 @@ opens the model connection, and captures a new one when `stop()` completes. The 
 model response is not a save point: a streaming session spans many responses, so the
 manager saves on `BidiAgentStopEvent`, not `BidiResponseStopEvent`.
 
-`SnapshotSessionManager` defaults to `Agent`. Subscript it as
-`SnapshotSessionManager[LocalAgent]` to attach it to a `BidiAgent`; a `snapshot_trigger`
-whose `agent_data` is annotated `LocalAgent` infers the same type.
-
 To keep a checkpoint at each stop, pass a `snapshot_trigger`. Restore a checkpoint with
 `restore_snapshot` while the agent is stopped; restoring a started agent raises
 `RuntimeError`, because the open connection already holds the earlier history.
 
 ```python
-from strands import LocalAgent
 from strands.experimental.bidi.agent import BidiAgent
 from strands.experimental.bidi.models import BedrockNovaSonicModel
 from strands.session import SnapshotSessionManager
 from strands.storage import LocalFileStorage
 
-session_manager = SnapshotSessionManager[LocalAgent](
+session_manager = SnapshotSessionManager(
     session_id="user_123_session",
     storage=LocalFileStorage("./sessions/"),
     snapshot_trigger=lambda *, agent_data, **_: True,
