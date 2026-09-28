@@ -46,7 +46,7 @@ from ..types.agent import LocalAgent
 from ..types.content import Message
 from ..types.exceptions import SnapshotException
 from ..types.session import decode_bytes_values, encode_bytes_values
-from .session_manager import SessionManager, _SessionAgentT
+from .session_manager import SessionManager
 
 if TYPE_CHECKING:
     from .._context_manager.stash import Stash
@@ -183,14 +183,10 @@ def _deserialize_snapshot(data: bytes) -> Snapshot:
 
 
 @runtime_checkable
-class SnapshotTrigger(Protocol[_SessionAgentT]):
-    """Decides whether to write an immutable checkpoint after an invocation.
+class SnapshotTrigger(Protocol):
+    """Decides whether to write an immutable checkpoint after an invocation."""
 
-    The agent type defaults to Agent. Triggers supporting both Agent and BidiAgent
-    implement SnapshotTrigger[LocalAgent].
-    """
-
-    def __call__(self, *, agent_data: _SessionAgentT, **kwargs: Any) -> bool:
+    def __call__(self, *, agent_data: LocalAgent, **kwargs: Any) -> bool:
         """Return True to append an immutable snapshot for the given agent.
 
         Args:
@@ -203,7 +199,7 @@ class SnapshotTrigger(Protocol[_SessionAgentT]):
         ...
 
 
-class SnapshotSessionManager(SessionManager[_SessionAgentT]):
+class SnapshotSessionManager(SessionManager[LocalAgent]):
     """Persists agent snapshots to a :class:`~strands.storage.storage.Storage` across invocations.
 
     On agent initialization the latest snapshot is restored automatically. On each
@@ -215,10 +211,6 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
     orchestrators are persisted latest-only: state is captured after each node (or each invocation,
     per ``multi_agent_save_latest_on``) and restored lazily on their first invocation. A BidiAgent
     is restored before its connection starts and captured when it stops.
-
-    The agent type defaults to Agent. A manager shared with a BidiAgent is
-    ``SnapshotSessionManager[LocalAgent]``; when ``snapshot_trigger`` is given, the type is
-    inferred from its ``agent_data`` annotation.
 
     Example:
         ```python
@@ -238,7 +230,7 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
         storage: Storage | None = None,
         save_latest_on: SaveLatestStrategy = "invocation",
         multi_agent_save_latest_on: MultiAgentSaveLatestStrategy = "node",
-        snapshot_trigger: SnapshotTrigger[_SessionAgentT] | None = None,
+        snapshot_trigger: SnapshotTrigger | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the snapshot session manager.
@@ -281,8 +273,7 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
         self._storage: Storage | None = _resolve_storage(storage) if storage is not None else None
         self._save_latest_on: SaveLatestStrategy = save_latest_on
         self._multi_agent_save_latest_on: MultiAgentSaveLatestStrategy = multi_agent_save_latest_on
-        # Widened so the Agent and BidiAgent completion handlers can both call it.
-        self._snapshot_trigger: SnapshotTrigger[Any] | None = snapshot_trigger
+        self._snapshot_trigger = snapshot_trigger
         # Orchestrator ids restored this process, so restore runs once per orchestrator (lazily,
         # on its first invocation) rather than on every invocation.
         self._multi_agent_restored_ids: set[str] = set()
@@ -367,7 +358,7 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
 
     # -- ABC methods (invoked synchronously by the Agent; bridge to async storage) --
 
-    def initialize(self, agent: _SessionAgentT, **kwargs: Any) -> None:
+    def initialize(self, agent: LocalAgent, **kwargs: Any) -> None:
         """Restore the agent from its latest snapshot, if one exists.
 
         Storage is resolved on the first call and cached; a single manager instance should not be
@@ -388,7 +379,7 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
             self._agent_stash = agent.context_manager.stash
         run_async(lambda: self._initialize_async(agent))
 
-    def sync_agent(self, agent: _SessionAgentT, **kwargs: Any) -> None:
+    def sync_agent(self, agent: LocalAgent, **kwargs: Any) -> None:
         """Capture the agent and overwrite ``snapshot_latest``.
 
         Args:
@@ -397,7 +388,7 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
         """
         run_async(lambda: self._save_latest(agent))
 
-    def redact_latest_message(self, redact_message: Message, agent: _SessionAgentT, **kwargs: Any) -> None:
+    def redact_latest_message(self, redact_message: Message, agent: LocalAgent, **kwargs: Any) -> None:
         """Persist immediately after a guardrail redaction, under every strategy.
 
         The Agent has already applied the redaction to ``agent.messages[-1]`` before
@@ -415,7 +406,7 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
         """
         run_async(lambda: self._save_latest(agent))
 
-    def append_message(self, message: Message, agent: _SessionAgentT, **kwargs: Any) -> None:
+    def append_message(self, message: Message, agent: LocalAgent, **kwargs: Any) -> None:
         """No-op — snapshots capture the whole agent.
 
         Per-message persistence under the ``"message"`` strategy is handled by the
@@ -430,7 +421,7 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
     # -- Public time-travel API --
 
     async def list_snapshot_ids(
-        self, agent: _SessionAgentT, *, limit: int | None = None, start_after: str | None = None
+        self, agent: LocalAgent, *, limit: int | None = None, start_after: str | None = None
     ) -> list[str]:
         """List immutable snapshot ids for an agent, oldest first.
 
@@ -463,7 +454,7 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
             ids = ids[:limit]
         return ids
 
-    async def restore_snapshot(self, agent: _SessionAgentT, *, snapshot_id: str | None = None) -> bool:
+    async def restore_snapshot(self, agent: LocalAgent, *, snapshot_id: str | None = None) -> bool:
         """Restore an agent from a stored snapshot.
 
         Args:
@@ -480,7 +471,7 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
         """
         return await self._restore(agent, snapshot_id=snapshot_id)
 
-    async def save_snapshot(self, agent: _SessionAgentT, *, is_latest: bool) -> str | None:
+    async def save_snapshot(self, agent: LocalAgent, *, is_latest: bool) -> str | None:
         """Save a snapshot of the agent's current state on demand.
 
         Use ``is_latest=False`` to force an immutable checkpoint at an arbitrary point (independent
@@ -496,7 +487,13 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
             The new immutable snapshot id, ready to pass to :meth:`restore_snapshot`, or ``None``
             when ``is_latest=True`` (``snapshot_latest`` is not addressed by id).
         """
-        return await self._save(agent, is_latest=is_latest)
+        snapshot = self._capture(agent)
+        await self._include_stash_data(agent, snapshot)
+        data = _serialize_snapshot(snapshot)
+        snapshot_id = None if is_latest else _new_snapshot_id()
+        key = _snapshot_key(self.session_id, agent.agent_id, snapshot_id=snapshot_id)
+        await self._resolved_storage.write(key, data)
+        return snapshot_id
 
     async def delete_session(self) -> None:
         """Delete all snapshots and stash data for this session."""
@@ -548,19 +545,9 @@ class SnapshotSessionManager(SessionManager[_SessionAgentT]):
         await self._restore_stash_data(agent, snapshot)
         return True
 
-    async def _save(self, agent: LocalAgent, *, is_latest: bool) -> str | None:
-        """Capture the agent and write either ``snapshot_latest`` or a new immutable snapshot."""
-        snapshot = self._capture(agent)
-        await self._include_stash_data(agent, snapshot)
-        data = _serialize_snapshot(snapshot)
-        snapshot_id = None if is_latest else _new_snapshot_id()
-        key = _snapshot_key(self.session_id, agent.agent_id, snapshot_id=snapshot_id)
-        await self._resolved_storage.write(key, data)
-        return snapshot_id
-
     async def _save_latest(self, agent: LocalAgent) -> None:
         """Capture the agent and overwrite ``snapshot_latest``."""
-        await self._save(agent, is_latest=True)
+        await self.save_snapshot(agent, is_latest=True)
 
     async def _save_immutable_and_latest(self, agent: LocalAgent) -> None:
         """Capture once and write the immutable snapshot, then ``snapshot_latest``.
