@@ -45,24 +45,19 @@ The `ContextManager` decides which specs appear in a call. "Hiding" a tool means
 
 ## Proposed SDK changes
 
-`ContextManager` adds a `tool_specs` target and `Hide` strategy to its existing strategy list. Strategies over messages continue to run from hooks. When the list contains a model-input target, ContextManager also installs an Input handler and clears its invocation state at the end of the invocation.
+`Hide` is a `ContextStrategy` and goes in the existing strategy list. `ContextManager` already calls `strategy.init(agent, stash)` on every strategy at attach time, and message strategies use that call to register their eager hooks. `Hide` uses the same call to register an `InvokeModelStage.Input` handler and an `AfterInvocationEvent` cleanup, because the tool-spec projection exists only in `InvokeModelContext`, not in `ContextState`. Its `apply()` returns `False`, so the message pipeline treats it as a no-op. `ContextManager` itself is unchanged.
 
 ```python
-class ContextManager(Plugin):
-    def init_agent(self, agent: Agent) -> None:
-        agent.hooks.add_callback(BeforeModelCallEvent, self._run_strategies)
-        agent.hooks.add_callback(AfterModelCallEvent, self._recover_from_overflow)
+class Hide(ContextStrategy):
+    def init(self, agent: Agent, stash: Stash | None) -> None:
+        agent._middleware_registry.add_middleware(InvokeModelStage.Input, self._apply_to_model_input)
+        agent.hooks.add_callback(AfterInvocationEvent, self._clear_invocation_state, order=HookOrder.SDK_LAST)
 
-        if self._has_model_input_strategies:
-            agent._middleware_registry.add_middleware(
-                InvokeModelStage.Input, self._apply_model_input_strategies
-            )
-            agent.hooks.add_callback(
-                AfterInvocationEvent, self._clear_invocation_state, order=HookOrder.SDK_LAST
-            )
+    async def apply(self, context: ContextState) -> bool:
+        return False  # tool specs are not in the message pipeline
 ```
 
-The Input handler is an implementation detail; developers configure `Hide` through the existing strategy list.
+The Input handler is an implementation detail; developers configure `Hide` through the strategy list like any other strategy.
 
 No breaking change. Existing strategies and facades are unchanged, and `agent.tools` and `agent.tool_registry` keep returning the full set.
 
@@ -100,7 +95,7 @@ Two things the event loop does today need adjusting for this handler.
 
 Token projection. Current: `projected_input_tokens` is estimated before input middleware, against the full catalog. What we need to do: the handler subtracts the tokens of the specs it removed and writes the corrected value to `context.projected_input_tokens` (P0). Proactive compression at `BeforeModelCallEvent` runs before any input middleware and keeps the pre-filter estimate, which is conservative; 0016 records the same limitation for routing.
 
-Handler ordering. Current: the handler runs after routing and tool-spec producers only because the manager's plugin initializes after them. What we need to do: make that an explicit ordering rule, either a `MiddlewareOrder` akin to `HookOrder` or a documented "ContextManager last" (P1).
+Handler ordering. Current: `Hide`'s handler runs after routing and tool-spec producers only because the ContextManager plugin initializes after them. What we need to do: make that an explicit ordering rule, either a `MiddlewareOrder` akin to `HookOrder` or a documented "ContextManager last" (P1).
 
 ### Search strategies
 
@@ -175,26 +170,16 @@ class ToolSearchStrategy(Protocol):
 class Hide(ContextStrategy):
     def __init__(
         self,
-        target: str | Sequence[str],
+        target: str | Sequence[str],                # "tool_specs", or ["tool_spec::*", "!tool_spec::name"]
         *,
         search: ToolSearchStrategy | None = None,
         keep: int = 10,
     ) -> None: ...
 
     def when(self, *, count: int | None = None) -> "Hide": ...
-
-ContextPreset = Literal["proactive_compression", "tool_selection"]
-
-class ContextManager:
-    def __init__(
-        self,
-        *,
-        strategies: Sequence[ContextStrategy | ContextPreset] | None = None,
-        ...,
-    ) -> None: ...
 ```
 
-A tool-spec `Hide` strategy keeps the first matches returned by `ToolSearchStrategy`; scores are informational. The `tool_selection` preset is added after benchmarks establish its default `Hide` configuration.
+`Hide` reuses the existing target parser with a `tool_spec::` namespace, matching `tool::` for tool results. `count` is the number of eligible specs after exclusions and is `Hide`'s only condition; `threshold`, `utilization`, and `preserve_recent` are message conditions and do not apply. When two `Hide` strategies are listed, the second sees the first's output. A tool-spec `Hide` strategy keeps the first matches returned by `ToolSearchStrategy`; scores are informational. The `tool_selection` preset joins the existing `StrategyPresetName` union after benchmarks establish its default `Hide` configuration.
 
 ## Prompt caching
 
@@ -227,7 +212,7 @@ TypeScript proves the extension first because its first-class `ContextManager` a
 - **P1, Python parity.** Port the first-class `ContextManager`, `tool_specs` target, and `Hide` with the same behavior; add the `tool_selection` preset after its default is established.
 - **P1, `LLMSearch` and `StorageSearch`.** Add the judge option and the `Storage.search`-backed strategy so embedding and S3 Vectors backends from #3967 plug in without a new abstraction.
 - **P1, projection after input middleware.** Re-estimate `projected_input_tokens` once after the `InvokeModelStage.Input` chain so spans and downstream consumers reflect every input handler, not only this one. `BeforeModelCallEvent` compression keeps the pre-middleware estimate; moving it later is a loop change shared with 0016 and out of scope here.
-- **P1, ordering contract.** Formalize where the manager's Input handler runs relative to routing and tool-spec producers, either a `MiddlewareOrder` akin to `HookOrder` or a documented "ContextManager last" rule, before the surface leaves experimental.
+- **P1, ordering contract.** Formalize where `Hide`'s Input handler runs relative to routing and tool-spec producers, either a `MiddlewareOrder` akin to `HookOrder` or a documented "ContextManager last" rule, before the surface leaves experimental.
 - **P1, provider callability.** Add OpenAI `allowed_tools` as a separate ContextManager strategy for restricting calls; it does not replace `Hide`.
 - **P1, facade default.** Add the `toolSelection` preset to `"auto"` only after benchmarks establish when it is net-positive, with an explicit opt-out.
 - **P2, deferred, append-only loading.** Mark definitions `defer_loading` and deliver discovered ones through OpenAI's tool search and `additional_tools` items or Anthropic's `tool_reference` blocks, with the loaded-tool history kept in model input so the prefix survives across calls. The active set grows through load events rather than being re-selected, so this mode needs its own lifecycle rules on top of the P0 policy. Anthropic's custom search tool returns `tool_reference` blocks, which is where `ToolSearchStrategy` plugs in server-side.
