@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Hide, HideStrategy } from '../hide.js'
-import { LexicalSearch, StaticSearch } from '../../tool-search.js'
+import { LexicalSearch, StaticSearch, searchableText } from '../../tool-search.js'
 import { InvokeModelStage } from '../../../middleware/stages.js'
 import { AfterInvocationEvent, BeforeInvocationEvent } from '../../../hooks/events.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
@@ -150,7 +150,7 @@ describe('Hide', () => {
     })
 
     it('reuses the selection for later calls in the same invocation', async () => {
-      const search: ToolSearchStrategy = { name: 'spy', search: vi.fn(async () => [{ id: 'billing_search' }]) }
+      const search: ToolSearchStrategy = { name: 'spy', search: vi.fn(async () => [{ name: 'billing_search' }]) }
       const strategy = Hide('toolSpecs', { search, keep: 1 }) as HideStrategy
       const { agent, handler } = attach(strategy)
       const invocationState: InvocationState = {}
@@ -179,7 +179,7 @@ describe('Hide', () => {
     it('keeps separate selections for concurrent invocations', async () => {
       const search: ToolSearchStrategy = {
         name: 'by-query',
-        search: async (query) => [{ id: query.includes('billing') ? 'billing_search' : 'shipping_search' }],
+        search: async (query) => [{ name: query.includes('billing') ? 'billing_search' : 'shipping_search' }],
       }
       const strategy = Hide('toolSpecs', { search, keep: 1 }) as HideStrategy
       const { agent, handler } = attach(strategy)
@@ -194,7 +194,7 @@ describe('Hide', () => {
     })
 
     it('derives the query from the latest user text, skipping tool-result-only turns', async () => {
-      const search: ToolSearchStrategy = { name: 'spy', search: vi.fn(async () => [{ id: 'billing_search' }]) }
+      const search: ToolSearchStrategy = { name: 'spy', search: vi.fn(async () => [{ name: 'billing_search' }]) }
       const strategy = Hide('toolSpecs', { search }) as HideStrategy
       const { agent, handler } = attach(strategy)
       const messages = [user('first'), user('  track the shipment  '), toolResultOnly()]
@@ -204,16 +204,15 @@ describe('Hide', () => {
       expect(search.search).toHaveBeenCalledWith('track the shipment', expect.any(Array), 10)
     })
 
-    it('renders name, description, and input-property descriptions into candidate text', async () => {
+    it('passes the eligible specs to search unchanged', async () => {
       const search: ToolSearchStrategy = { name: 'spy', search: vi.fn(async () => []) }
-      const strategy = Hide('toolSpecs', { search }) as HideStrategy
+      const strategy = Hide(['toolSpec::*', '!toolSpec::ask_user'], { search }) as HideStrategy
       const { agent, handler } = attach(strategy)
-      const withProps = [spec('lookup', 'Find a record', { account_id: { description: 'Customer account id' } })]
 
-      await handler(context(agent, withProps))
+      await handler(context(agent, catalog))
 
-      const candidates = (search.search as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { text: string }[]
-      expect(candidates[0]!.text).toBe('lookup Find a record account_id Customer account id')
+      const eligible = catalog.filter((entry) => entry.name !== 'ask_user')
+      expect(search.search).toHaveBeenCalledWith(expect.any(String), eligible, 10)
     })
   })
 
@@ -343,7 +342,7 @@ describe('Hide', () => {
 
   describe('invocation state', () => {
     it('clears the selection on AfterInvocationEvent', async () => {
-      const search: ToolSearchStrategy = { name: 'spy', search: vi.fn(async () => [{ id: 'billing_search' }]) }
+      const search: ToolSearchStrategy = { name: 'spy', search: vi.fn(async () => [{ name: 'billing_search' }]) }
       const strategy = Hide('toolSpecs', { search, keep: 1 }) as HideStrategy
       const { agent, handler } = attach(strategy)
       const invocationState: InvocationState = {}
@@ -384,22 +383,29 @@ describe('Hide', () => {
   })
 })
 
+describe('searchableText', () => {
+  it('joins name, description, and input-property names and descriptions', () => {
+    const withProps = spec('lookup', 'Find a record', { account_id: { description: 'Customer account id' } })
+    expect(searchableText(withProps)).toBe('lookup Find a record account_id Customer account id')
+  })
+})
+
 describe('LexicalSearch', () => {
   const search = new LexicalSearch()
   const candidates = [
-    { id: 'billing_search', text: 'billing_search Search billing records' },
-    { id: 'shipping_search', text: 'shipping_search Search shipments by tracking number' },
-    { id: 'ask_user', text: 'ask_user Ask the user a question' },
+    spec('billing_search', 'Search billing records'),
+    spec('shipping_search', 'Search shipments by tracking number'),
+    spec('ask_user', 'Ask the user a question'),
   ]
 
   it('ranks by overlap and weights name terms higher', async () => {
     const matches = await search.search('search shipping', candidates, 3)
-    expect(matches.map((match) => match.id)).toEqual(['shipping_search', 'billing_search'])
+    expect(matches.map((match) => match.name)).toEqual(['shipping_search', 'billing_search'])
   })
 
   it('breaks ties by candidate order', async () => {
     const matches = await search.search('search', candidates, 3)
-    expect(matches.map((match) => match.id)).toEqual(['billing_search', 'shipping_search'])
+    expect(matches.map((match) => match.name)).toEqual(['billing_search', 'shipping_search'])
   })
 
   it('returns nothing for an empty query', async () => {
@@ -413,9 +419,9 @@ describe('LexicalSearch', () => {
 })
 
 describe('StaticSearch', () => {
-  it('returns its ids in order up to the limit', async () => {
+  it('returns its names in order up to the limit', async () => {
     const search = new StaticSearch(['a', 'b', 'c'])
     const matches = await search.search('ignored', [], 2)
-    expect(matches.map((match) => match.id)).toEqual(['a', 'b'])
+    expect(matches.map((match) => match.name)).toEqual(['a', 'b'])
   })
 })

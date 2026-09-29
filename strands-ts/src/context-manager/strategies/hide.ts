@@ -7,7 +7,9 @@
  * pipeline. The registry is never touched: a hidden spec is absent from one call's projection,
  * and the next invocation recomputes the view.
  *
- * @experimental
+ * Not exported from the package barrel while the API is experimental.
+ *
+ * @internal
  */
 
 import { AfterInvocationEvent, BeforeInvocationEvent } from '../../hooks/events.js'
@@ -23,7 +25,7 @@ import type { ToolSpec } from '../../tools/types.js'
 import type { InvocationState, LocalAgent } from '../../types/agent.js'
 import type { Message } from '../../types/messages.js'
 import type { ContextState, ContextStrategy } from '../types.js'
-import type { ToolSearchCandidate, ToolSearchStrategy } from '../tool-search.js'
+import type { ToolSearchStrategy } from '../tool-search.js'
 
 /**
  * Target for hide operations.
@@ -185,13 +187,12 @@ export class HideStrategy implements HideStrategyBuilder {
   private async _select(context: InvokeModelContext, eligible: readonly ToolSpec[]): Promise<HideState> {
     const eligibleNames = new Set(eligible.map((spec) => spec.name))
     const query = queryFromMessages(context.messages)
-    const candidates = eligible.map(toCandidate)
 
     try {
-      const matches = await this._search.search(query, candidates, this._keep)
+      const matches = await this._search.search(query, eligible, this._keep)
       const selected = new Set<string>()
       for (const match of matches) {
-        if (eligibleNames.has(match.id)) selected.add(match.id)
+        if (eligibleNames.has(match.name)) selected.add(match.name)
         if (selected.size >= this._keep) break
       }
       if (selected.size === 0) {
@@ -256,21 +257,6 @@ function queryFromMessages(messages: readonly Message[]): string {
     if (text.length > 0) return text
   }
   return ''
-}
-
-function toCandidate(spec: ToolSpec): ToolSearchCandidate {
-  const properties = spec.inputSchema?.properties
-  const propertyText =
-    properties && typeof properties === 'object'
-      ? Object.entries(properties)
-          .map(([key, value]) => {
-            const description =
-              value && typeof value === 'object' && 'description' in value ? String(value.description) : ''
-            return `${key} ${description}`
-          })
-          .join(' ')
-      : ''
-  return { id: spec.name, text: `${spec.name} ${spec.description} ${propertyText}` }
 }
 
 const objectIds = new WeakMap<object, number>()

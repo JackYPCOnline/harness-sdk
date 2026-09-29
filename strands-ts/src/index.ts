@@ -290,10 +290,6 @@ export type {
 export type { TruncateConfig } from './context-manager/methods/truncate.js'
 export type { SummarizeConfig } from './context-manager/methods/summarize.js'
 export type { StrategyPresetName } from './context-manager/presets.js'
-export { Hide } from './context-manager/strategies/hide.js'
-export type { HideTarget, HideConfig, HideConditions, HideStrategyBuilder } from './context-manager/strategies/hide.js'
-export { LexicalSearch, StaticSearch } from './context-manager/tool-search.js'
-export type { ToolSearchStrategy, ToolSearchCandidate, ToolSearchMatch } from './context-manager/tool-search.js'
 
 // Conversation Manager
 export {
