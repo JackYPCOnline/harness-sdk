@@ -49,14 +49,23 @@ function toolResultOnly(): Message {
   })
 }
 
+/** A model whose countTokens charges a flat rate per tool spec. */
+function countingModel(tokensPerSpec = 25): InvokeModelContext['model'] {
+  return {
+    countTokens: vi.fn(async (_messages: Message[], options?: { toolSpecs?: readonly ToolSpec[] }) => {
+      return (options?.toolSpecs?.length ?? 0) * tokensPerSpec
+    }),
+  } as unknown as InvokeModelContext['model']
+}
+
 function context(
   agent: MockAgent,
   toolSpecs: ToolSpec[],
-  overrides?: Partial<Pick<InvokeModelContext, 'messages' | 'toolChoice' | 'invocationState'>>
+  overrides?: Partial<Pick<InvokeModelContext, 'messages' | 'toolChoice' | 'invocationState' | 'model'>>
 ): InvokeModelContext {
   return {
     agent,
-    model: agent.model,
+    model: overrides?.model ?? countingModel(),
     messages: overrides?.messages ?? [user('search the billing records')],
     toolSpecs,
     invocationState: overrides?.invocationState ?? {},
@@ -280,6 +289,55 @@ describe('Hide', () => {
       const { agent, handler } = attach(strategy)
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['billing_search'])
+    })
+  })
+
+  describe('token projection', () => {
+    it('subtracts the removed specs from projectedInputTokens', async () => {
+      const strategy = Hide('toolSpecs', { search: new StaticSearch(['billing_search']), keep: 1 }) as HideStrategy
+      const { agent, handler } = attach(strategy)
+      const model = countingModel(25)
+
+      const result = await handler({ ...context(agent, catalog, { model }), projectedInputTokens: 1000 })
+
+      expect(result.projectedInputTokens).toBe(900)
+      expect(model.countTokens).toHaveBeenCalledWith([], {
+        toolSpecs: catalog.filter((spec) => spec.name !== 'billing_search'),
+      })
+    })
+
+    it('leaves the projection alone when nothing was hidden', async () => {
+      const strategy = Hide('toolSpecs', { search: new StaticSearch([]), keep: 1 }) as HideStrategy
+      const { agent, handler } = attach(strategy)
+      const model = countingModel()
+
+      const result = await handler({ ...context(agent, catalog, { model }), projectedInputTokens: 1000 })
+
+      expect(result.projectedInputTokens).toBe(1000)
+      expect(model.countTokens).not.toHaveBeenCalled()
+    })
+
+    it('does not add a projection when the loop supplied none', async () => {
+      const strategy = Hide('toolSpecs', { search: new StaticSearch(['billing_search']), keep: 1 }) as HideStrategy
+      const { agent, handler } = attach(strategy)
+
+      const result = await handler(context(agent, catalog))
+
+      expect('projectedInputTokens' in result).toBe(false)
+    })
+
+    it('keeps the original projection when the recount throws', async () => {
+      const strategy = Hide('toolSpecs', { search: new StaticSearch(['billing_search']), keep: 1 }) as HideStrategy
+      const { agent, handler } = attach(strategy)
+      const model = {
+        countTokens: vi.fn(async () => {
+          throw new Error('count failed')
+        }),
+      } as unknown as InvokeModelContext['model']
+
+      const result = await handler({ ...context(agent, catalog, { model }), projectedInputTokens: 1000 })
+
+      expect(result.projectedInputTokens).toBe(1000)
     })
   })
 

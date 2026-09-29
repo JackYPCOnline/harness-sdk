@@ -150,7 +150,35 @@ export class HideStrategy implements HideStrategyBuilder {
     logger.debug(
       `strategy=<${this.name}>, catalog=<${catalog.length}>, visible=<${visible.length}> | tool specs filtered`
     )
-    return { ...context, toolSpecs: visible }
+    const projectedInputTokens = await this._correctProjection(context, catalog, visible)
+    return {
+      ...context,
+      toolSpecs: visible,
+      ...(projectedInputTokens !== undefined && { projectedInputTokens }),
+    }
+  }
+
+  /**
+   * The loop projects input tokens against the full catalog before input middleware runs.
+   * Subtract the specs this call removed so downstream consumers see the filtered size.
+   */
+  private async _correctProjection(
+    context: InvokeModelContext,
+    catalog: readonly ToolSpec[],
+    visible: readonly ToolSpec[]
+  ): Promise<number | undefined> {
+    if (context.projectedInputTokens === undefined || visible.length === catalog.length) {
+      return context.projectedInputTokens
+    }
+    const visibleNames = new Set(visible.map((spec) => spec.name))
+    const removed = catalog.filter((spec) => !visibleNames.has(spec.name))
+    try {
+      const removedTokens = await context.model.countTokens([], { toolSpecs: removed })
+      return Math.max(0, context.projectedInputTokens - removedTokens)
+    } catch (error) {
+      logger.debug(`strategy=<${this.name}>, error=<${error}> | token recount failed, keeping projection`)
+      return context.projectedInputTokens
+    }
   }
 
   /** Open a selection for this invocation. Fails open to every eligible spec. */
