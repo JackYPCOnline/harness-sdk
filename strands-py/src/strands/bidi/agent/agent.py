@@ -124,8 +124,8 @@ class BidiAgent(LocalAgent):
             description: Description of what the Agent does.
             hooks: Optional list of hook providers to register for lifecycle events.
             state: Stateful information for the agent. Can be either an AgentState object, or a json serializable dict.
-            session_manager: Manager for persisting the agent's conversation history and state across
-                streaming sessions. Must accept a ``LocalAgent`` (for example ``SnapshotSessionManager``).
+            session_manager: Manager for handling agent sessions including conversation history and state.
+                If provided, enables session-based persistence and state management.
             storage: Default storage backend for agent subsystems.
                 When provided, subsystems that do not have their own explicit storage
                 (e.g., SessionManager) resolve from this value. Each subsystem
@@ -202,7 +202,7 @@ class BidiAgent(LocalAgent):
 
         self._session_manager = session_manager
         if self._session_manager:
-            self._session_id: str = getattr(self._session_manager, "session_id", None) or uuid.uuid4().hex[:8]
+            self._session_id: str = getattr(self._session_manager, "session_id", uuid.uuid4().hex[:8])
             self.hooks.add_hook(self._session_manager)
         else:
             self._session_id = uuid.uuid4().hex[:8]

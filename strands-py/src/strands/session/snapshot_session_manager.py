@@ -324,44 +324,23 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
         snapshot save/restore handlers.
         """
         # Restore must be synchronous — AgentInitializedEvent forbids async callbacks.
-        registry.add_callback(AgentInitializedEvent, self._on_agent_initialized)
+        registry.add_callback(AgentInitializedEvent, lambda event: self.initialize(event.agent))
 
-        # Agent save hooks. The save paths run under invoke_callbacks_async, so register them as
-        # native async handlers and avoid the sync bridge. They are wired here rather than at init
-        # so they keep their position relative to the hooks the Agent registers after its session
-        # manager (AfterInvocationEvent runs callbacks in reverse registration order).
+        # The save paths run under invoke_callbacks_async, so register them as native
+        # async handlers and avoid the sync bridge. MessageAddedEvent is emitted by both agent
+        # kinds under separate strategies, so each message handler acts only on its own kind.
         if self._save_latest_on == "message":
             registry.add_callback(MessageAddedEvent, self._on_message_added)
         registry.add_callback(AfterInvocationEvent, self._on_after_invocation)
 
-        # A BidiAgent's save hooks are wired at its init event (see _register_bidi_agent_hooks),
-        # where the agent kind is known. An orchestrator has no AgentInitializedEvent to lazily
-        # resolve storage from, so its hooks are wired at its own init event.
-        registry.add_callback(MultiAgentInitializedEvent, self._init_multi_agent)
-
-    def _on_agent_initialized(self, event: AgentInitializedEvent[LocalAgent]) -> None:
-        """Wire BidiAgent save hooks, then restore the agent from ``snapshot_latest``.
-
-        The restore applies to both kinds: a BidiAgent is restored here, before ``start()`` opens
-        the model connection.
-        """
-        agent = event.agent
-        if isinstance(agent, BidiAgent):
-            self._register_bidi_agent_hooks(agent)
-        self.initialize(agent)
-
-    def _register_bidi_agent_hooks(self, agent: BidiAgent) -> None:
-        """Register the save hooks for a BidiAgent per ``bidi_agent_save_latest_on``.
-
-        Registered per instance because ``MessageAddedEvent`` is shared with Agent while the two
-        kinds follow separate strategies, and ``register_hooks`` cannot tell which kind it serves.
-        Nothing registers hooks between the session manager and this event in ``BidiAgent.__init__``,
-        so the relative order to user hooks is the same as registering in ``register_hooks``.
-        """
         if self._bidi_agent_save_latest_on == "message":
-            agent.add_hook(self._on_bidi_message_changed, [MessageAddedEvent, MessageUpdatedEvent])
+            registry.add_callback([MessageAddedEvent, MessageUpdatedEvent], self._on_bidi_message_changed)
         # SDK_LAST so user stop hooks mutate state before the completion save captures it.
-        agent.add_hook(self._on_bidi_agent_stop, BidiAgentStopEvent, order=HookOrder.SDK_LAST)
+        registry.add_callback(BidiAgentStopEvent, self._on_bidi_agent_stop, order=HookOrder.SDK_LAST)
+
+        # An orchestrator has no AgentInitializedEvent to lazily resolve storage from, so its hooks
+        # are wired at its own init event.
+        registry.add_callback(MultiAgentInitializedEvent, self._init_multi_agent)
 
     def _init_multi_agent(self, event: MultiAgentInitializedEvent) -> None:
         """Wire orchestrator snapshot persistence at init."""
@@ -616,20 +595,23 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
     async def _on_message_added(self, event: MessageAddedEvent[LocalAgent]) -> None:
         """Save latest after each message under the Agent ``"message"`` strategy.
 
-        A BidiAgent emits the same event but follows ``bidi_agent_save_latest_on``; its
-        per-message save is wired separately in ``_register_bidi_agent_hooks``.
+        A BidiAgent emits the same event but follows ``bidi_agent_save_latest_on``.
         """
         if isinstance(event.agent, BidiAgent):
             return
         await self._save_latest(event.agent)
 
-    async def _on_bidi_message_changed(self, event: MessageAddedEvent | MessageUpdatedEvent) -> None:
+    async def _on_bidi_message_changed(
+        self, event: MessageAddedEvent[LocalAgent] | MessageUpdatedEvent[LocalAgent]
+    ) -> None:
         """Save latest after each message addition or replacement under the Bidi ``"message"`` strategy.
 
         Replacements matter here: a BidiAgent appends a placeholder when a response starts and
         replaces it with the completed transcript, so saving only on addition would persist the
-        placeholder.
+        placeholder. An Agent emits ``MessageAddedEvent`` too but follows ``save_latest_on``.
         """
+        if not isinstance(event.agent, BidiAgent):
+            return
         await self._save_latest(event.agent)
 
     async def _on_after_invocation(self, event: AfterInvocationEvent) -> None:
