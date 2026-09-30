@@ -96,6 +96,13 @@ def test_unknown_save_latest_on_is_rejected(storage):
         SnapshotSessionManager("s1", storage=storage, save_latest_on="Invocation")  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("bad_strategy", ["Message", "invocation"])
+def test_unknown_bidi_agent_save_latest_on_is_rejected(storage, bad_strategy):
+    """The Bidi strategy has its own vocabulary; Agent-only values like "invocation" are rejected."""
+    with pytest.raises(ValueError, match="bidi_agent_save_latest_on must be one of"):
+        SnapshotSessionManager("s1", storage=storage, bidi_agent_save_latest_on=bad_strategy)
+
+
 def test_graph_snapshot_is_persisted_after_run(storage):
     """Running a Graph with the manager writes its state to the multiAgent scope key."""
     builder = GraphBuilder()
@@ -1375,10 +1382,10 @@ async def test_bidi_agent_snapshot_contains_only_bidi_fields(storage):
 
 
 @pytest.mark.asyncio
-async def test_bidi_agent_invocation_strategy_saves_once_at_stop(temp_dir):
+async def test_bidi_agent_stop_strategy_saves_once_at_stop(temp_dir):
     storage = LocalFileStorage(temp_dir)
     save_keys = _spy_writes(storage)
-    agent = _bidi_agent(SnapshotSessionManager("s1", storage=storage))
+    agent = _bidi_agent(SnapshotSessionManager("s1", storage=storage, bidi_agent_save_latest_on="stop"))
     save_keys.clear()
 
     await agent._append_messages({"role": "user", "content": [{"text": "one"}]})
@@ -1391,10 +1398,11 @@ async def test_bidi_agent_invocation_strategy_saves_once_at_stop(temp_dir):
 
 
 @pytest.mark.asyncio
-async def test_bidi_agent_message_strategy_saves_message_replacements_and_at_stop(temp_dir):
+async def test_bidi_agent_defaults_to_message_strategy_saving_replacements_and_at_stop(temp_dir):
+    """The Bidi default is "message": a streaming session has no invocation boundary to save at."""
     storage = LocalFileStorage(temp_dir)
     save_keys = _spy_writes(storage)
-    agent = _bidi_agent(SnapshotSessionManager("s1", storage=storage, save_latest_on="message"))
+    agent = _bidi_agent(SnapshotSessionManager("s1", storage=storage))
     save_keys.clear()
 
     placeholder = {"role": "assistant", "content": [{"text": ""}]}
@@ -1406,7 +1414,7 @@ async def test_bidi_agent_message_strategy_saves_message_replacements_and_at_sto
     }
     await agent._update_message(replacement)
 
-    restored = _bidi_agent(SnapshotSessionManager("s1", storage=storage, save_latest_on="message"))
+    restored = _bidi_agent(SnapshotSessionManager("s1", storage=storage))
     assert _texts(restored) == ["complete"]
 
     await agent.hooks.invoke_callbacks_async(BidiAgentStopEvent(agent=agent))
@@ -1417,7 +1425,7 @@ async def test_bidi_agent_message_strategy_saves_message_replacements_and_at_sto
 async def test_bidi_agent_trigger_strategy_skips_latest_without_trigger(temp_dir):
     storage = LocalFileStorage(temp_dir)
     save_keys = _spy_writes(storage)
-    agent = _bidi_agent(SnapshotSessionManager("s1", storage=storage, save_latest_on="trigger"))
+    agent = _bidi_agent(SnapshotSessionManager("s1", storage=storage, bidi_agent_save_latest_on="trigger"))
     save_keys.clear()
 
     await agent._append_messages({"role": "user", "content": [{"text": "one"}]})
@@ -1427,15 +1435,49 @@ async def test_bidi_agent_trigger_strategy_skips_latest_without_trigger(temp_dir
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("save_latest_on", ["invocation", "message", "trigger"])
-async def test_bidi_agent_trigger_creates_immutable_and_latest_at_stop(storage, save_latest_on):
+async def test_bidi_agent_ignores_agent_save_latest_on(temp_dir):
+    """The two strategies are independent: the Agent "message" strategy does not leak into a BidiAgent."""
+    storage = LocalFileStorage(temp_dir)
+    save_keys = _spy_writes(storage)
+    manager = SnapshotSessionManager("s1", storage=storage, save_latest_on="message", bidi_agent_save_latest_on="stop")
+    agent = _bidi_agent(manager)
+    save_keys.clear()
+
+    await agent._append_messages({"role": "user", "content": [{"text": "one"}]})
+    assert save_keys == []
+
+    await agent.hooks.invoke_callbacks_async(BidiAgentStopEvent(agent=agent))
+    assert save_keys == [_on_disk_key("s1", "b1")]
+
+
+@pytest.mark.asyncio
+async def test_agent_ignores_bidi_agent_save_latest_on(temp_dir):
+    """The two strategies are independent: the Bidi "message" default does not leak into an Agent."""
+    storage = LocalFileStorage(temp_dir)
+    save_keys = _spy_writes(storage)
+    manager = SnapshotSessionManager(
+        "s1", storage=storage, save_latest_on="trigger", bidi_agent_save_latest_on="message"
+    )
+    agent = Agent(model=_model("reply"), session_manager=manager, agent_id="a1")
+    save_keys.clear()
+
+    await agent.invoke_async("hello")
+
+    assert save_keys == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bidi_agent_save_latest_on", ["message", "stop", "trigger"])
+async def test_bidi_agent_trigger_creates_immutable_and_latest_at_stop(storage, bidi_agent_save_latest_on):
     seen: list[BidiAgent] = []
 
     def trigger(*, agent_data, **kwargs):
         seen.append(agent_data)
         return True
 
-    manager = SnapshotSessionManager("s1", storage=storage, save_latest_on=save_latest_on, snapshot_trigger=trigger)
+    manager = SnapshotSessionManager(
+        "s1", storage=storage, bidi_agent_save_latest_on=bidi_agent_save_latest_on, snapshot_trigger=trigger
+    )
     agent = _bidi_agent(manager)
     await agent._append_messages({"role": "user", "content": [{"text": "one"}]})
     await agent.hooks.invoke_callbacks_async(BidiAgentStopEvent(agent=agent))
@@ -1457,17 +1499,21 @@ async def test_bidi_agent_trigger_returning_false_appends_nothing(storage):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("save_latest_on", ["invocation", "trigger"])
-async def test_bidi_agent_raising_trigger_still_saves_latest(storage, save_latest_on):
+@pytest.mark.parametrize("bidi_agent_save_latest_on", ["stop", "trigger"])
+async def test_bidi_agent_raising_trigger_still_saves_latest(storage, bidi_agent_save_latest_on):
     def boom(*, agent_data, **kwargs):
         raise RuntimeError("trigger blew up")
 
-    manager = SnapshotSessionManager("s1", storage=storage, save_latest_on=save_latest_on, snapshot_trigger=boom)
+    manager = SnapshotSessionManager(
+        "s1", storage=storage, bidi_agent_save_latest_on=bidi_agent_save_latest_on, snapshot_trigger=boom
+    )
     agent = _bidi_agent(manager)
     await agent._append_messages({"role": "user", "content": [{"text": "survived"}]})
     await agent.hooks.invoke_callbacks_async(BidiAgentStopEvent(agent=agent))
 
-    agent_2 = _bidi_agent(SnapshotSessionManager("s1", storage=storage, save_latest_on=save_latest_on))
+    agent_2 = _bidi_agent(
+        SnapshotSessionManager("s1", storage=storage, bidi_agent_save_latest_on=bidi_agent_save_latest_on)
+    )
     assert _texts(agent_2) == ["survived"]
     assert await manager.list_snapshot_ids(agent) == []
 

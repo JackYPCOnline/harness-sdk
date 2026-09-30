@@ -28,6 +28,7 @@ from .._async import run_async
 from .._identifier import Identifier, is_uuid7
 from .._identifier import new_uuid7 as _new_snapshot_id
 from .._identifier import validate as validate_identifier
+from ..experimental.bidi.agent import BidiAgent
 from ..experimental.bidi.hooks import BidiAgentStopEvent
 from ..hooks.events import (
     AfterInvocationEvent,
@@ -56,21 +57,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SaveLatestStrategy = Literal["message", "invocation", "trigger"]
-"""Controls how often ``snapshot_latest`` is saved automatically.
+"""Controls how often an Agent's ``snapshot_latest`` is saved automatically.
 
-- ``"invocation"``: after every agent invocation completes, or after a BidiAgent stops (default;
-  balances durability and I/O).
-- ``"message"``: after every message addition or replacement, plus the completion save above
-  (most durable, highest I/O).
+- ``"invocation"``: after every agent invocation completes (default; balances durability and I/O).
+- ``"message"``: after every message added, plus the invocation save above (most durable,
+  highest I/O).
 - ``"trigger"``: only when ``snapshot_trigger`` fires (or manually via ``save_snapshot``).
 
 Guardrail redactions are flushed immediately under every strategy, including ``"trigger"``,
 so pre-redaction content never sits at rest. This diverges from the TypeScript SDK, which
 does not flush redactions under ``"trigger"``; see :meth:`SnapshotSessionManager.redact_latest_message`.
+
+A BidiAgent follows :data:`BidiAgentSaveLatestStrategy` instead.
 """
 
 # Derived from the Literal above so the accepted runtime values cannot drift from the type.
 _SAVE_LATEST_STRATEGIES = get_args(SaveLatestStrategy)
+
+BidiAgentSaveLatestStrategy = Literal["message", "stop", "trigger"]
+"""Controls how often a BidiAgent's ``snapshot_latest`` is saved automatically.
+
+- ``"message"``: after every message addition or replacement, plus the stop save below (default;
+  a streaming session has no invocation boundary, so a mid-session crash resumes at the last
+  completed transcript entry instead of losing the connection's whole history).
+- ``"stop"``: only when the agent stops (lower I/O; a mid-session crash loses the in-flight history).
+- ``"trigger"``: only when ``snapshot_trigger`` fires (or manually via ``save_snapshot``).
+
+A response completing is not a save point: a streaming session spans many responses, so the
+completion save runs on ``BidiAgentStopEvent``, not ``BidiResponseStopEvent``.
+"""
+
+_BIDI_AGENT_SAVE_LATEST_STRATEGIES = get_args(BidiAgentSaveLatestStrategy)
 
 MultiAgentSaveLatestStrategy = Literal["node", "invocation"]
 """Controls how often an orchestrator's ``snapshot_latest`` is saved automatically.
@@ -212,7 +229,8 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
     Single agents get immutable time-travel snapshots via ``snapshot_trigger``. Graph and Swarm
     orchestrators are persisted latest-only: state is captured after each node (or each invocation,
     per ``multi_agent_save_latest_on``) and restored lazily on their first invocation. A BidiAgent
-    is restored before its connection starts and captured when it stops.
+    is restored before its connection starts and captured after each message and when it stops
+    (per ``bidi_agent_save_latest_on``).
 
     Example:
         ```python
@@ -231,6 +249,7 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
         *,
         storage: Storage | None = None,
         save_latest_on: SaveLatestStrategy = "invocation",
+        bidi_agent_save_latest_on: BidiAgentSaveLatestStrategy = "message",
         multi_agent_save_latest_on: MultiAgentSaveLatestStrategy = "node",
         snapshot_trigger: SnapshotTrigger | None = None,
         **kwargs: Any,
@@ -243,7 +262,10 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
                 resolves from the agent-level ``storage`` during initialization; if no
                 agent-level storage is available, falls back to
                 :class:`~strands.storage.local_file_storage.LocalFileStorage`.
-            save_latest_on: When to overwrite ``snapshot_latest``. See :data:`SaveLatestStrategy`.
+            save_latest_on: For an Agent, when to overwrite ``snapshot_latest``.
+                See :data:`SaveLatestStrategy`.
+            bidi_agent_save_latest_on: For a BidiAgent, when to overwrite ``snapshot_latest``.
+                See :data:`BidiAgentSaveLatestStrategy`.
             multi_agent_save_latest_on: For Graph/Swarm orchestrators, when to overwrite the
                 orchestrator's ``snapshot_latest``. See :data:`MultiAgentSaveLatestStrategy`.
             snapshot_trigger: Optional callback invoked after each invocation, or after a BidiAgent
@@ -253,8 +275,8 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
 
         Raises:
             ValueError: If ``session_id`` is empty, is a relative-path segment (``.`` or ``..``),
-                normalizes to empty, or contains a path separator; or if ``save_latest_on`` is
-                not a recognized strategy.
+                normalizes to empty, or contains a path separator; or if any ``*save_latest_on``
+                value is not a recognized strategy.
         """
         self.session_id = validate_identifier(session_id, Identifier.SESSION)
         # validate_identifier permits "."/".."/whitespace, which either collapse the session
@@ -266,6 +288,11 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
             # Silently accepting an unknown value would register no save hooks — the session
             # would persist nothing with no error.
             raise ValueError(f"save_latest_on must be one of {_SAVE_LATEST_STRATEGIES}, got {save_latest_on!r}")
+        if bidi_agent_save_latest_on not in _BIDI_AGENT_SAVE_LATEST_STRATEGIES:
+            raise ValueError(
+                f"bidi_agent_save_latest_on must be one of {_BIDI_AGENT_SAVE_LATEST_STRATEGIES}, "
+                f"got {bidi_agent_save_latest_on!r}"
+            )
         if multi_agent_save_latest_on not in _MULTI_AGENT_SAVE_LATEST_STRATEGIES:
             raise ValueError(
                 f"multi_agent_save_latest_on must be one of {_MULTI_AGENT_SAVE_LATEST_STRATEGIES}, "
@@ -274,6 +301,7 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
         self._raw_storage: Storage | None = storage
         self._storage: Storage | None = _resolve_storage(storage) if storage is not None else None
         self._save_latest_on: SaveLatestStrategy = save_latest_on
+        self._bidi_agent_save_latest_on: BidiAgentSaveLatestStrategy = bidi_agent_save_latest_on
         self._multi_agent_save_latest_on: MultiAgentSaveLatestStrategy = multi_agent_save_latest_on
         self._snapshot_trigger = snapshot_trigger
         # Orchestrator ids restored this process, so restore runs once per orchestrator (lazily,
@@ -298,19 +326,40 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
         snapshot save/restore handlers.
         """
         # Restore must be synchronous — AgentInitializedEvent forbids async callbacks.
-        registry.add_callback(AgentInitializedEvent, lambda event: self.initialize(event.agent))
+        registry.add_callback(AgentInitializedEvent, self._on_agent_initialized)
 
-        # The save paths run under invoke_callbacks_async, so register them as native
-        # async handlers and avoid the sync bridge.
+        # Agent save hooks. The save paths run under invoke_callbacks_async, so register them as
+        # native async handlers and avoid the sync bridge. They are wired here rather than at init
+        # so they keep their position relative to the hooks the Agent registers after its session
+        # manager (AfterInvocationEvent runs callbacks in reverse registration order).
         if self._save_latest_on == "message":
-            registry.add_callback(MessageAddedEvent, self._on_message_changed)
-            registry.add_callback(MessageUpdatedEvent, self._on_message_changed)
+            registry.add_callback(MessageAddedEvent, self._on_message_added)
         registry.add_callback(AfterInvocationEvent, self._on_after_invocation)
-        registry.add_callback(BidiAgentStopEvent, self._on_bidi_agent_stop, order=HookOrder.SDK_LAST)
 
-        # An orchestrator has no AgentInitializedEvent to lazily resolve storage from, so its hooks
-        # are wired at its own init event.
+        # A BidiAgent's save hooks are wired at its init event (see _init_bidi_agent), where the
+        # agent kind is known. An orchestrator has no AgentInitializedEvent to lazily resolve
+        # storage from, so its hooks are wired at its own init event.
         registry.add_callback(MultiAgentInitializedEvent, self._init_multi_agent)
+
+    def _on_agent_initialized(self, event: AgentInitializedEvent[LocalAgent]) -> None:
+        """Wire kind-specific save hooks, then restore the agent."""
+        agent = event.agent
+        if isinstance(agent, BidiAgent):
+            self._init_bidi_agent(agent)
+        self.initialize(agent)
+
+    def _init_bidi_agent(self, agent: BidiAgent) -> None:
+        """Wire BidiAgent snapshot persistence at init.
+
+        Wired per instance because ``MessageAddedEvent`` is shared with Agent while the two kinds
+        follow separate strategies, and ``register_hooks`` cannot tell which kind it serves.
+        Nothing registers hooks between the session manager and this event in ``BidiAgent.__init__``,
+        so the relative order to user hooks is the same as registering in ``register_hooks``.
+        """
+        if self._bidi_agent_save_latest_on == "message":
+            agent.add_hook(self._on_bidi_message_changed, [MessageAddedEvent, MessageUpdatedEvent])
+        # SDK_LAST so user stop hooks mutate state before the completion save captures it.
+        agent.add_hook(self._on_bidi_agent_stop, BidiAgentStopEvent, order=HookOrder.SDK_LAST)
 
     def _init_multi_agent(self, event: MultiAgentInitializedEvent) -> None:
         """Wire orchestrator snapshot persistence at init."""
@@ -562,8 +611,23 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
         )
         await self._resolved_storage.write(_snapshot_key(self.session_id, agent.agent_id, snapshot_id=None), data)
 
-    async def _on_message_changed(self, event: MessageAddedEvent | MessageUpdatedEvent) -> None:
-        """Save latest after each message addition or replacement under the ``"message"`` strategy."""
+    async def _on_message_added(self, event: MessageAddedEvent[LocalAgent]) -> None:
+        """Save latest after each message under the Agent ``"message"`` strategy.
+
+        A BidiAgent emits the same event but follows ``bidi_agent_save_latest_on``; its
+        per-message save is wired separately in ``_init_bidi_agent``.
+        """
+        if isinstance(event.agent, BidiAgent):
+            return
+        await self._save_latest(event.agent)
+
+    async def _on_bidi_message_changed(self, event: MessageAddedEvent | MessageUpdatedEvent) -> None:
+        """Save latest after each message addition or replacement under the Bidi ``"message"`` strategy.
+
+        Replacements matter here: a BidiAgent appends a placeholder when a response starts and
+        replaces it with the completed transcript, so saving only on addition would persist the
+        placeholder.
+        """
         await self._save_latest(event.agent)
 
     async def _on_after_invocation(self, event: AfterInvocationEvent) -> None:
@@ -574,21 +638,27 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
         ``MessageAddedEvent`` but before this event, so the per-message saves would otherwise
         persist pre-management messages and a stale ``removed_message_count``.
         """
-        await self._save_on_completion(event.agent)
+        await self._save_on_completion(event.agent, save_latest=self._save_latest_on != "trigger")
 
     async def _on_bidi_agent_stop(self, event: BidiAgentStopEvent) -> None:
         """Save latest when the streaming session stops and fire the immutable-checkpoint trigger.
 
         A response completing is not a session boundary; the persistent connection is. Each
         ``stop()`` call emits this event, so a repeated ``stop()`` repeats the completion save.
+        ``"message"`` also saves here so state mutated by stop hooks is captured.
         """
-        await self._save_on_completion(event.agent)
+        await self._save_on_completion(event.agent, save_latest=self._bidi_agent_save_latest_on != "trigger")
 
-    async def _save_on_completion(self, agent: LocalAgent) -> None:
+    async def _save_on_completion(self, agent: LocalAgent, *, save_latest: bool) -> None:
         """Apply the completion save decision shared by Agent invocations and BidiAgent stops.
 
         When the trigger fires, the immutable+latest write subsumes the completion save, so the
-        agent is captured only once even under ``save_latest_on="invocation"``.
+        agent is captured only once even when ``save_latest`` is True.
+
+        Args:
+            agent: The agent whose invocation completed or whose streaming session stopped.
+            save_latest: Whether the caller's strategy saves ``snapshot_latest`` at this boundary.
+                A raising trigger saves regardless, so the completed turn is never lost.
         """
         triggered = False
         trigger_failed = False
@@ -605,7 +675,7 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
                 )
         if triggered:
             await self._save_immutable_and_latest(agent)
-        elif trigger_failed or self._save_latest_on in ("invocation", "message"):
+        elif save_latest or trigger_failed:
             await self._save_latest(agent)
 
     def _capture(self, agent: LocalAgent) -> Snapshot:
