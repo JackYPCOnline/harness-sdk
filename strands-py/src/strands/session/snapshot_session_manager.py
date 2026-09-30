@@ -28,8 +28,8 @@ from .._async import run_async
 from .._identifier import Identifier, is_uuid7
 from .._identifier import new_uuid7 as _new_snapshot_id
 from .._identifier import validate as validate_identifier
-from ..experimental.bidi.agent import BidiAgent
-from ..experimental.bidi.hooks import BidiAgentStopEvent
+from ..bidi.agent import BidiAgent
+from ..bidi.hooks import BidiAgentStopEvent
 from ..hooks.events import (
     AfterInvocationEvent,
     AfterMultiAgentInvocationEvent,
