@@ -67,8 +67,6 @@ SaveLatestStrategy = Literal["message", "invocation", "trigger"]
 Guardrail redactions are flushed immediately under every strategy, including ``"trigger"``,
 so pre-redaction content never sits at rest. This diverges from the TypeScript SDK, which
 does not flush redactions under ``"trigger"``; see :meth:`SnapshotSessionManager.redact_latest_message`.
-
-A BidiAgent follows :data:`BidiAgentSaveLatestStrategy` instead.
 """
 
 # Derived from the Literal above so the accepted runtime values cannot drift from the type.
@@ -336,23 +334,27 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
             registry.add_callback(MessageAddedEvent, self._on_message_added)
         registry.add_callback(AfterInvocationEvent, self._on_after_invocation)
 
-        # A BidiAgent's save hooks are wired at its init event (see _init_bidi_agent), where the
-        # agent kind is known. An orchestrator has no AgentInitializedEvent to lazily resolve
-        # storage from, so its hooks are wired at its own init event.
+        # A BidiAgent's save hooks are wired at its init event (see _register_bidi_agent_hooks),
+        # where the agent kind is known. An orchestrator has no AgentInitializedEvent to lazily
+        # resolve storage from, so its hooks are wired at its own init event.
         registry.add_callback(MultiAgentInitializedEvent, self._init_multi_agent)
 
     def _on_agent_initialized(self, event: AgentInitializedEvent[LocalAgent]) -> None:
-        """Wire kind-specific save hooks, then restore the agent."""
+        """Wire BidiAgent save hooks, then restore the agent from ``snapshot_latest``.
+
+        The restore applies to both kinds: a BidiAgent is restored here, before ``start()`` opens
+        the model connection.
+        """
         agent = event.agent
         if isinstance(agent, BidiAgent):
-            self._init_bidi_agent(agent)
+            self._register_bidi_agent_hooks(agent)
         self.initialize(agent)
 
-    def _init_bidi_agent(self, agent: BidiAgent) -> None:
-        """Wire BidiAgent snapshot persistence at init.
+    def _register_bidi_agent_hooks(self, agent: BidiAgent) -> None:
+        """Register the save hooks for a BidiAgent per ``bidi_agent_save_latest_on``.
 
-        Wired per instance because ``MessageAddedEvent`` is shared with Agent while the two kinds
-        follow separate strategies, and ``register_hooks`` cannot tell which kind it serves.
+        Registered per instance because ``MessageAddedEvent`` is shared with Agent while the two
+        kinds follow separate strategies, and ``register_hooks`` cannot tell which kind it serves.
         Nothing registers hooks between the session manager and this event in ``BidiAgent.__init__``,
         so the relative order to user hooks is the same as registering in ``register_hooks``.
         """
@@ -615,7 +617,7 @@ class SnapshotSessionManager(SessionManager[LocalAgent]):
         """Save latest after each message under the Agent ``"message"`` strategy.
 
         A BidiAgent emits the same event but follows ``bidi_agent_save_latest_on``; its
-        per-message save is wired separately in ``_init_bidi_agent``.
+        per-message save is wired separately in ``_register_bidi_agent_hooks``.
         """
         if isinstance(event.agent, BidiAgent):
             return

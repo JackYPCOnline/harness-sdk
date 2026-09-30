@@ -200,7 +200,6 @@ class BidiAgent(LocalAgent):
             for hook in hooks:
                 self.hooks.add_hook(hook)
 
-        # Initialize session management functionality
         self._session_manager = session_manager
         if self._session_manager:
             self._session_id: str = getattr(self._session_manager, "session_id", None) or uuid.uuid4().hex[:8]
