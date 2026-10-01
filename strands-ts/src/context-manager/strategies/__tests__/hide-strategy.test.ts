@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { Hide, HideToolSpecsStrategy, searchableText } from '../hide/index.js'
+import { Hide, HideToolSpecsStrategy } from '../hide/index.js'
 import { InvokeModelStage } from '../../../middleware/stages.js'
 import { AfterInvocationEvent, BeforeInvocationEvent } from '../../../hooks/events.js'
 import { InMemoryStorage } from '../../../storage/in-memory-storage.js'
@@ -7,6 +7,7 @@ import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-to
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
 import { Message, TextBlock, ToolResultBlock } from '../../../types/messages.js'
 import { createMockAgent, invokeTrackedHook } from '../../../__fixtures__/agent-helpers.js'
+import { createStaticSearch } from '../../../__fixtures__/search-helpers.js'
 import type { MockAgent } from '../../../__fixtures__/agent-helpers.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
 import type { SearchStrategy } from '../../../storage/search/index.js'
@@ -29,11 +30,6 @@ function attach(strategy: HideToolSpecsStrategy): { agent: MockAgent; handler: I
   strategy.init(agent)
   if (!handler) throw new Error('strategy did not register an Input handler')
   return { agent, handler }
-}
-
-/** A search strategy that returns fixed keys best-first, ignoring the query and the index. */
-function staticSearch(keys: string[]): SearchStrategy<InMemoryStorage> {
-  return { search: async () => keys.map((key, index) => ({ key, score: keys.length - index })) }
 }
 
 /** A search strategy whose `search` is a spy returning fixed keys. */
@@ -107,21 +103,25 @@ const toolSpecs = (...args: Parameters<typeof Hide.toolSpecs>): HideToolSpecsStr
 
 describe('Hide.toolSpecs', () => {
   describe('construction', () => {
-    it('defaults the target to every tool spec', () => {
-      const strategy = Hide.toolSpecs()
-      expect(strategy.name).toBe('hide:toolSpecs')
-      expect(typeof strategy.apply).toBe('function')
+    it('defaults the target to every tool spec', async () => {
+      const search = createStaticSearch<InMemoryStorage>(['shipping_track'])
+      const { agent, handler } = attach(toolSpecs(undefined, { search, keep: 1 }))
+      const result = await handler(context(agent, catalog))
+      expect(result.toolSpecs.map((entry) => entry.name)).toEqual(['shipping_track'])
     })
 
-    it('when() returns a new strategy and leaves the original unchanged', () => {
-      const base = Hide.toolSpecs('toolSpecs', { keep: 2 })
+    it('when() returns a new strategy and leaves the original ungated', async () => {
+      const base = toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>(['shipping_track']), keep: 1 })
       const gated = base.when({ count: 20 })
       expect(gated).not.toBe(base)
       expect(gated.name).toBe('hide:toolSpecs')
+      const { agent, handler } = attach(base)
+      const result = await handler(context(agent, catalog))
+      expect(names(result.toolSpecs)).toEqual(['shipping_track'])
     })
 
     it('when() carries the full config across', async () => {
-      const search = staticSearch(['shipping_track'])
+      const search = createStaticSearch<InMemoryStorage>(['shipping_track'])
       const config = { search, keep: 1, alwaysHide: ['billing_search'], onFailure: 'none' as const }
       const gated = toolSpecs(['toolSpec::*', '!toolSpec::ask_user'], config).when({ count: 0 })
       const { agent, handler } = attach(gated as HideToolSpecsStrategy)
@@ -171,7 +171,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('emits in catalog order even when search ranks differently', async () => {
-      const search = staticSearch(['shipping_track', 'billing_search'])
+      const search = createStaticSearch<InMemoryStorage>(['shipping_track', 'billing_search'])
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2 }))
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['billing_search', 'shipping_track'])
@@ -189,7 +189,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('intersects a stored selection with the current catalog', async () => {
-      const search = staticSearch(['billing_search', 'shipping_track'])
+      const search = createStaticSearch<InMemoryStorage>(['billing_search', 'shipping_track'])
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2 }))
       const invocationState: InvocationState = {}
       await handler(context(agent, catalog, { invocationState }))
@@ -223,18 +223,32 @@ describe('Hide.toolSpecs', () => {
 
     it('indexes only the eligible specs, keyed by tool name', async () => {
       let indexed: string[] = []
-      let billingText = ''
+      let lookupText = ''
       const search: SearchStrategy<InMemoryStorage> = {
         search: async (storage) => {
           indexed = await storage.list('')
-          billingText = new TextDecoder().decode((await storage.read('billing_search')) ?? new Uint8Array())
+          lookupText = new TextDecoder().decode((await storage.read('lookup')) ?? new Uint8Array())
           return []
         },
       }
+      const lookup = spec('lookup', 'Find a record', { account_id: { description: 'Customer account id' } })
       const { agent, handler } = attach(toolSpecs(['toolSpec::*', '!toolSpec::ask_user'], { search }))
-      await handler(context(agent, catalog))
-      expect(indexed).toEqual(['billing_search', 'billing_summary', 'shipping_search', 'shipping_track'])
-      expect(billingText).toBe(searchableText(catalog[0]!))
+      await handler(context(agent, [...catalog, lookup]))
+      expect(indexed).toEqual(['billing_search', 'billing_summary', 'lookup', 'shipping_search', 'shipping_track'])
+      expect(lookupText).toBe('lookup Find a record account_id Customer account id')
+    })
+
+    it('selects tools whose names are not valid storage keys', async () => {
+      const slashed = [spec('mcp//server/search', 'Search'), spec('..', 'Dots'), spec('back\\slash', 'Slash')]
+      const search: SearchStrategy<InMemoryStorage> = {
+        search: async (storage) => {
+          const encoded = (await storage.list('')).filter((key) => key.includes('%'))
+          return encoded.map((key) => ({ key, score: 1 }))
+        },
+      }
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 3 }))
+      const result = await handler(context(agent, [...catalog, ...slashed]))
+      expect(names(result.toolSpecs)).toEqual(['mcp//server/search', '..', 'back\\slash'])
     })
   })
 
@@ -252,7 +266,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('narrows the candidates to named specs and leaves the rest visible', async () => {
-      const search = staticSearch(['billing_summary'])
+      const search = createStaticSearch<InMemoryStorage>(['billing_summary'])
       const target = ['toolSpec::billing_search', 'toolSpec::billing_summary']
       const { agent, handler } = attach(toolSpecs(target, { search, keep: 1 }))
       const result = await handler(context(agent, catalog))
@@ -260,7 +274,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('lets the wildcard override named candidates', async () => {
-      const search = staticSearch(['shipping_track'])
+      const search = createStaticSearch<InMemoryStorage>(['shipping_track'])
       const { agent, handler } = attach(toolSpecs(['toolSpec::billing_search', 'toolSpec::*'], { search, keep: 1 }))
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['shipping_track'])
@@ -280,7 +294,7 @@ describe('Hide.toolSpecs', () => {
 
   describe('alwaysHide', () => {
     it('removes the named specs before selection', async () => {
-      const search = staticSearch(['billing_search', 'ask_user'])
+      const search = createStaticSearch<InMemoryStorage>(['billing_search', 'ask_user'])
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2, alwaysHide: ['billing_search'] }))
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['ask_user'])
@@ -291,6 +305,14 @@ describe('Hide.toolSpecs', () => {
       const { agent, handler } = attach(toolSpecs(target, { keep: 1, alwaysHide: ['ask_user'] }))
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['billing_search'])
+    })
+
+    it('cannot hide protected tools', async () => {
+      const alwaysHide = [STRUCTURED_OUTPUT_TOOL_NAME, RETRIEVAL_TOOL_NAME]
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1, alwaysHide }))
+      const withProtected = [...catalog, spec(STRUCTURED_OUTPUT_TOOL_NAME), spec(RETRIEVAL_TOOL_NAME)]
+      const result = await handler(context(agent, withProtected))
+      expect(names(result.toolSpecs)).toEqual(['billing_search', STRUCTURED_OUTPUT_TOOL_NAME, RETRIEVAL_TOOL_NAME])
     })
 
     it('applies even when count is not met', async () => {
@@ -337,7 +359,9 @@ describe('Hide.toolSpecs', () => {
 
     it('"none" shows only pinned tools when nothing matches and nothing can be carried', async () => {
       const target = ['toolSpec::*', '!toolSpec::ask_user']
-      const { agent, handler } = attach(toolSpecs(target, { search: staticSearch([]), onFailure: 'none' }))
+      const { agent, handler } = attach(
+        toolSpecs(target, { search: createStaticSearch<InMemoryStorage>([]), onFailure: 'none' })
+      )
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['ask_user'])
     })
@@ -391,9 +415,32 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('shows every spec when there is nothing to carry forward', async () => {
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { search: staticSearch([]), keep: 1 }))
+      const { agent, handler } = attach(
+        toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>([]), keep: 1 })
+      )
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(names(catalog))
+    })
+
+    it('keeps carried selections separate per agent', async () => {
+      const search: SearchStrategy<InMemoryStorage> = {
+        search: async (_storage, query) => (query === 'billing' ? [{ key: 'billing_search', score: 1 }] : []),
+      }
+      const strategy = toolSpecs('toolSpecs', { search, keep: 1 })
+      const { agent: first, handler } = attach(strategy)
+      const second = createMockAgent()
+      await handler(context(first, catalog, { invocationState: {}, messages: [user('billing')] }))
+      const result = await handler(context(second, catalog, { invocationState: {}, messages: [user('thanks')] }))
+      expect(names(result.toolSpecs)).toEqual(names(catalog))
+    })
+
+    it('skips selection when nothing is eligible', async () => {
+      const search = spySearch([])
+      const { agent, handler } = attach(toolSpecs(['toolSpec::ghost'], { search }))
+      const input = context(agent, catalog)
+      const result = await handler(input)
+      expect(result).toBe(input)
+      expect(search.search).not.toHaveBeenCalled()
     })
 
     it('shows every spec when the carried selection is no longer in the catalog', async () => {
@@ -421,7 +468,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('ignores keys that are not in the catalog', async () => {
-      const search = staticSearch(['ghost', 'billing_search'])
+      const search = createStaticSearch<InMemoryStorage>(['ghost', 'billing_search'])
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2 }))
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['billing_search'])
@@ -429,7 +476,7 @@ describe('Hide.toolSpecs', () => {
   })
 
   describe('token projection', () => {
-    const search = staticSearch(['billing_search'])
+    const search = createStaticSearch<InMemoryStorage>(['billing_search'])
 
     it('subtracts the removed specs on a cold start', async () => {
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
@@ -451,7 +498,9 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('leaves the projection alone when nothing was hidden', async () => {
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { search: staticSearch([]), keep: 1 }))
+      const { agent, handler } = attach(
+        toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>([]), keep: 1 })
+      )
       const model = countingModel()
       const result = await handler({ ...context(agent, catalog, { model }), projectedInputTokens: 1000 })
       expect(result.projectedInputTokens).toBe(1000)
@@ -489,7 +538,9 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('ignores a foreign value under its key', async () => {
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { search: staticSearch(['billing_search']), keep: 1 }))
+      const { agent, handler } = attach(
+        toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>(['billing_search']), keep: 1 })
+      )
       const invocationState: InvocationState = {}
       await handler(context(agent, catalog, { invocationState }))
       const [key] = Object.keys(invocationState)
@@ -499,8 +550,11 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('uses a distinct key per strategy instance', async () => {
-      const first = toolSpecs('toolSpecs', { search: staticSearch(['billing_search']), keep: 1 })
-      const second = toolSpecs('toolSpecs', { search: staticSearch(['shipping_track']), keep: 1 })
+      const first = toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>(['billing_search']), keep: 1 })
+      const second = toolSpecs('toolSpecs', {
+        search: createStaticSearch<InMemoryStorage>(['shipping_track']),
+        keep: 1,
+      })
       const { agent, handler: firstHandler } = attach(first)
       const { handler: secondHandler } = attach(second)
       const invocationState: InvocationState = {}
@@ -508,12 +562,5 @@ describe('Hide.toolSpecs', () => {
       await secondHandler(context(agent, catalog, { invocationState }))
       expect(Object.keys(invocationState)).toHaveLength(2)
     })
-  })
-})
-
-describe('searchableText', () => {
-  it('joins name, description, and input-property names and descriptions', () => {
-    const withProps = spec('lookup', 'Find a record', { account_id: { description: 'Customer account id' } })
-    expect(searchableText(withProps)).toBe('lookup Find a record account_id Customer account id')
   })
 })

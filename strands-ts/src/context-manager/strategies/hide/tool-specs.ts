@@ -18,6 +18,7 @@ import { BaseHideStrategy } from './base.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
 import type { SearchStrategy } from '../../../storage/search/index.js'
 import type { ToolSpec } from '../../../tools/types.js'
+import type { LocalAgent } from '../../../types/agent.js'
 import type { Message } from '../../../types/messages.js'
 import type { ContextStrategy } from '../../types.js'
 import type { HideConditions } from './base.js'
@@ -57,7 +58,11 @@ export interface HideToolSpecsConfig {
   search?: SearchStrategy<InMemoryStorage>
   /** How many candidates to keep visible. Defaults to 10. */
   keep?: number
-  /** Tool names the model never sees, regardless of search, `count`, or pinning. */
+  /**
+   * Tool names the model never sees, regardless of search, `count`, or pinning. Tools the
+   * ContextManager and agent loop depend on (`structured_output`, `retrieve_context`) are
+   * never hidden, even if listed here.
+   */
   alwaysHide?: readonly string[]
   /** What to show when no selection can be made. Defaults to `"all"`. */
   onFailure?: HideFailurePolicy
@@ -94,8 +99,8 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
   private readonly _candidates: ReadonlySet<string> | undefined
   /** Names from `!toolSpec::<name>` entries; always visible, never candidates. */
   private readonly _pinned: ReadonlySet<string>
-  /** The last selection this instance made, carried forward when a follow-up turn has no matches. */
-  private _previous: ReadonlySet<string> | undefined
+  /** Each agent's last search-backed selection, carried forward when a follow-up turn has no matches. */
+  private readonly _previous = new WeakMap<LocalAgent, ReadonlySet<string>>()
 
   constructor(target: HideToolSpecsTarget, config?: HideToolSpecsConfig, conditions?: HideConditions) {
     super(conditions)
@@ -124,21 +129,22 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     if (context.toolChoice !== undefined) return context
 
     const catalog = context.toolSpecs
-    const shown = catalog.filter((spec) => !this._alwaysHide.has(spec.name))
+    const shown = catalog.filter((spec) => PROTECTED_TOOLS.has(spec.name) || !this._alwaysHide.has(spec.name))
     const eligible = shown.filter((spec) => this._isEligible(spec))
-    if (this._count !== undefined && eligible.length < this._count) {
+    const gated = this._count !== undefined && eligible.length < this._count
+    if (gated || eligible.length === 0) {
       return shown.length === catalog.length ? context : this._emit(context, catalog, shown)
     }
 
-    let state = this._getState(context.invocationState)
-    if (state === undefined) {
-      state = await this._select(context, eligible)
-      this._setState(context.invocationState, state)
-      this._previous = state.selected
-    }
-
-    const visible = shown.filter((spec) => !this._isEligible(spec) || state!.selected.has(spec.name))
+    const state = this._getState(context.invocationState) ?? (await this._open(context, eligible))
+    const visible = shown.filter((spec) => !this._isEligible(spec) || state.selected.has(spec.name))
     return this._emit(context, catalog, visible)
+  }
+
+  private async _open(context: InvokeModelContext, eligible: readonly ToolSpec[]): Promise<ToolSpecsState> {
+    const state = await this._select(context, eligible)
+    this._setState(context.invocationState, state)
+    return state
   }
 
   private async _emit(
@@ -163,29 +169,20 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
    */
   private async _select(context: InvokeModelContext, eligible: readonly ToolSpec[]): Promise<ToolSpecsState> {
     const eligibleNames = new Set(eligible.map((spec) => spec.name))
-    const query = queryFromMessages(context.messages)
 
     try {
-      const index = new InMemoryStorage(this._search)
-      const encoder = new TextEncoder()
-      for (const spec of eligible) {
-        await index.write(spec.name, encoder.encode(searchableText(spec)))
+      const selected = await this._rank(eligible, queryFromMessages(context.messages))
+      if (selected.size > 0) {
+        this._previous.set(context.agent, selected)
+        return new ToolSpecsState(selected)
       }
-      const results = await this._search.search(index, query)
 
-      const selected = new Set<string>()
-      for (const result of results) {
-        if (eligibleNames.has(result.key)) selected.add(result.key)
-        if (selected.size >= this._keep) break
-      }
-      if (selected.size > 0) return new ToolSpecsState(selected)
-
-      const carried = this._carryForward(eligibleNames)
+      const carried = this._carryForward(context.agent, eligibleNames)
       if (carried) {
         logger.debug(`strategy=<${this.name}> | no matches, carrying previous selection forward`)
         return new ToolSpecsState(carried)
       }
-      logger.warn(`strategy=<${this.name}>, onFailure=<${this._onFailure}> | no matches and nothing to carry forward`)
+      logger.debug(`strategy=<${this.name}>, onFailure=<${this._onFailure}> | no matches and nothing to carry forward`)
       return this._fallback(eligibleNames)
     } catch (error) {
       logger.warn(`strategy=<${this.name}>, onFailure=<${this._onFailure}>, error=<${error}> | search failed`)
@@ -193,14 +190,38 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     }
   }
 
+  /**
+   * Rank the candidates and return the top `keep` names. Storage keys are path-normalized and
+   * tool names are not, so names are URI-encoded into keys and mapped back from results.
+   */
+  private async _rank(eligible: readonly ToolSpec[], query: string): Promise<Set<string>> {
+    const index = new InMemoryStorage(this._search)
+    const encoder = new TextEncoder()
+    const nameByKey = new Map<string, string>()
+    for (const spec of eligible) {
+      const key = indexKey(spec.name)
+      nameByKey.set(key, spec.name)
+      await index.write(key, encoder.encode(searchableText(spec)))
+    }
+
+    const selected = new Set<string>()
+    for (const result of await this._search.search(index, query)) {
+      const name = nameByKey.get(result.key)
+      if (name !== undefined) selected.add(name)
+      if (selected.size >= this._keep) break
+    }
+    return selected
+  }
+
   private _fallback(eligibleNames: ReadonlySet<string>): ToolSpecsState {
     return new ToolSpecsState(this._onFailure === 'all' ? eligibleNames : new Set())
   }
 
-  /** The previous selection, intersected with what is eligible now; undefined if nothing survives. */
-  private _carryForward(eligibleNames: ReadonlySet<string>): ReadonlySet<string> | undefined {
-    if (this._previous === undefined) return undefined
-    const carried = new Set([...this._previous].filter((name) => eligibleNames.has(name)))
+  /** The agent's previous selection, intersected with what is eligible now; undefined if nothing survives. */
+  private _carryForward(agent: LocalAgent, eligibleNames: ReadonlySet<string>): ReadonlySet<string> | undefined {
+    const previous = this._previous.get(agent)
+    if (previous === undefined) return undefined
+    const carried = new Set([...previous].filter((name) => eligibleNames.has(name)))
     return carried.size > 0 ? carried : undefined
   }
 
@@ -241,14 +262,13 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
   }
 }
 
-/**
- * The searchable text of a spec: name, description, and input-property names and descriptions.
- *
- * @param spec - The tool spec
- * @returns Space-joined searchable text
- * @internal
- */
-export function searchableText(spec: ToolSpec): string {
+/** A storage key for a tool name; plain identifiers pass through unchanged, `/`, `\`, and `.` do not. */
+function indexKey(name: string): string {
+  return encodeURIComponent(name).replaceAll('.', '%2E')
+}
+
+/** The searchable text of a spec: name, description, and input-property names and descriptions. */
+function searchableText(spec: ToolSpec): string {
   const properties = spec.inputSchema?.properties
   const propertyText =
     properties && typeof properties === 'object'

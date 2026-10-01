@@ -12,7 +12,7 @@ import { HideToolSpecsStrategy } from './tool-specs.js'
 
 export type { HideConditions, HideStrategyBuilder } from './base.js'
 export type { HideFailurePolicy, HideToolSpecsConfig, HideToolSpecsTarget } from './tool-specs.js'
-export { HideToolSpecsStrategy, searchableText } from './tool-specs.js'
+export { HideToolSpecsStrategy } from './tool-specs.js'
 
 /**
  * Hide strategy builder namespace.

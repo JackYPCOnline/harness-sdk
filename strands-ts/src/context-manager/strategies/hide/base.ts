@@ -41,7 +41,8 @@ export interface HideStrategyBuilder extends ContextStrategy {
   when(conditions: HideConditions): ContextStrategy
 }
 
-const STATE_KEY_PREFIX = 'strands:hide'
+const STATE_KEY_PREFIX = 'strands'
+let nextInstanceId = 1
 
 /**
  * Shared hide logic: middleware registration, per-invocation state, and the `count` gate.
@@ -53,6 +54,7 @@ export abstract class BaseHideStrategy<TState extends object> implements HideStr
   abstract readonly name: string
 
   protected readonly _count: number | undefined
+  private readonly _instanceId = nextInstanceId++
 
   constructor(conditions?: HideConditions) {
     if (conditions?.count !== undefined && (!Number.isInteger(conditions.count) || conditions.count < 0)) {
@@ -99,18 +101,6 @@ export abstract class BaseHideStrategy<TState extends object> implements HideStr
 
   /** One key per strategy instance, so two hide entries in one list keep separate state. */
   private get _stateKey(): string {
-    return `${STATE_KEY_PREFIX}:${this.name}:${objectId(this).toString(16)}`
+    return `${STATE_KEY_PREFIX}:${this.name}:${this._instanceId}`
   }
-}
-
-const objectIds = new WeakMap<object, number>()
-let nextObjectId = 1
-
-function objectId(value: object): number {
-  let id = objectIds.get(value)
-  if (id === undefined) {
-    id = nextObjectId++
-    objectIds.set(value, id)
-  }
-  return id
 }

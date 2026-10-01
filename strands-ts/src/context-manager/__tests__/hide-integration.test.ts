@@ -5,7 +5,8 @@ import { RETRIEVAL_TOOL_NAME } from '../retrieval-tool.js'
 import { Hide } from '../strategies/hide/index.js'
 import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 import { createMockTool } from '../../__fixtures__/tool-helpers.js'
-import { TextBlock } from '../../types/messages.js'
+import { createStaticSearch } from '../../__fixtures__/search-helpers.js'
+import { TextBlock, ToolUseBlock } from '../../types/messages.js'
 import type { InMemoryStorage } from '../../storage/in-memory-storage.js'
 import type { SearchStrategy } from '../../storage/search/index.js'
 import type { Message } from '../../types/messages.js'
@@ -22,11 +23,6 @@ class RecordingModel extends MockMessageModel {
   }
 }
 
-/** A search strategy that returns fixed keys best-first, ignoring the query and the index. */
-function staticSearch(keys: string[]): SearchStrategy<InMemoryStorage> {
-  return { search: async () => keys.map((key, index) => ({ key, score: keys.length - index })) }
-}
-
 describe('Hide through ContextManager', () => {
   it('filters the specs the model receives and leaves the registry intact', async () => {
     const model = new RecordingModel().addTurn(new TextBlock('done'))
@@ -36,7 +32,7 @@ describe('Hide through ContextManager', () => {
       tools,
       printer: false,
       contextManager: new ContextManager({
-        strategies: [Hide.toolSpecs('toolSpecs', { search: staticSearch(['beta']), keep: 1 })],
+        strategies: [Hide.toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>(['beta']), keep: 1 })],
         stash: false,
       }),
     })
@@ -47,6 +43,49 @@ describe('Hide through ContextManager', () => {
     expect(agent.tools.map((tool) => tool.name).sort()).toEqual(['alpha', 'beta', 'gamma'])
   })
 
+  it('reuses the selection across every model call of one invocation', async () => {
+    const model = new RecordingModel()
+      .addTurn(new ToolUseBlock({ name: 'beta', toolUseId: 'use-1', input: {} }))
+      .addTurn(new TextBlock('done'))
+    const tools = ['alpha', 'beta', 'gamma'].map((name) => createMockTool(name, () => 'ok'))
+    const search = createStaticSearch<InMemoryStorage>(['beta'])
+    const agent = new Agent({
+      model,
+      tools,
+      printer: false,
+      contextManager: new ContextManager({
+        strategies: [Hide.toolSpecs('toolSpecs', { search, keep: 1 })],
+        stash: false,
+      }),
+    })
+
+    await agent.invoke('hello')
+
+    expect(model.seenToolSpecs).toEqual([['beta'], ['beta']])
+  })
+
+  it('carries the selection into a follow-up invocation with no matches', async () => {
+    const model = new RecordingModel().addTurn(new TextBlock('done')).addTurn(new TextBlock('done'))
+    const tools = ['alpha', 'beta', 'gamma'].map((name) => createMockTool(name, () => 'ok'))
+    const search: SearchStrategy<InMemoryStorage> = {
+      search: async (_storage, query) => (query === 'hello' ? [{ key: 'beta', score: 1 }] : []),
+    }
+    const agent = new Agent({
+      model,
+      tools,
+      printer: false,
+      contextManager: new ContextManager({
+        strategies: [Hide.toolSpecs('toolSpecs', { search, keep: 1 })],
+        stash: false,
+      }),
+    })
+
+    await agent.invoke('hello')
+    await agent.invoke('thanks')
+
+    expect(model.seenToolSpecs).toEqual([['beta'], ['beta']])
+  })
+
   it('keeps the retrieval tool visible alongside an offload preset', async () => {
     const model = new RecordingModel().addTurn(new TextBlock('done'))
     const tools = ['alpha', 'beta', 'gamma'].map((name) => createMockTool(name, () => 'ok'))
@@ -55,7 +94,10 @@ describe('Hide through ContextManager', () => {
       tools,
       printer: false,
       contextManager: new ContextManager({
-        strategies: ['largeToolOffloading', Hide.toolSpecs('toolSpecs', { search: staticSearch(['beta']), keep: 1 })],
+        strategies: [
+          'largeToolOffloading',
+          Hide.toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>(['beta']), keep: 1 }),
+        ],
       }),
     })
 
