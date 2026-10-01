@@ -11,7 +11,7 @@ import type { HideToolSpecsConfig, HideToolSpecsTarget } from './tool-specs.js'
 import { HideToolSpecsStrategy } from './tool-specs.js'
 
 export type { HideConditions, HideStrategyBuilder } from './base.js'
-export type { HideToolSpecsConfig, HideToolSpecsTarget } from './tool-specs.js'
+export type { HideFailurePolicy, HideToolSpecsConfig, HideToolSpecsTarget } from './tool-specs.js'
 export { HideToolSpecsStrategy, searchableText } from './tool-specs.js'
 
 /**
@@ -31,8 +31,12 @@ interface HideNamespace {
  * ```typescript
  * // Keep the 10 most relevant specs once the catalog has 20 or more
  * Hide.toolSpecs().when({ count: 20 })
- * // Keep ask_user and finish visible without consuming keep
+ * // Pin ask_user and finish: always visible, never counted against keep
  * Hide.toolSpecs(['toolSpec::*', '!toolSpec::ask_user', '!toolSpec::finish'], { keep: 15 }).when({ count: 20 })
+ * // Only the billing tools are candidates; everything else stays visible
+ * Hide.toolSpecs(['toolSpec::billing_search', 'toolSpec::billing_summary'], { keep: 1 })
+ * // Never show debug_dump, and show only pinned tools if search fails
+ * Hide.toolSpecs('toolSpecs', { alwaysHide: ['debug_dump'], onFailure: 'none' })
  * // Rank with a different storage search strategy
  * Hide.toolSpecs('toolSpecs', { search: mySearchStrategy })
  * ```

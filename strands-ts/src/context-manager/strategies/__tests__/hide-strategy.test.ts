@@ -120,6 +120,15 @@ describe('Hide.toolSpecs', () => {
       expect(gated.name).toBe('hide:toolSpecs')
     })
 
+    it('when() carries the full config across', async () => {
+      const search = staticSearch(['shipping_track'])
+      const config = { search, keep: 1, alwaysHide: ['billing_search'], onFailure: 'none' as const }
+      const gated = toolSpecs(['toolSpec::*', '!toolSpec::ask_user'], config).when({ count: 0 })
+      const { agent, handler } = attach(gated as HideToolSpecsStrategy)
+      const result = await handler(context(agent, catalog))
+      expect(names(result.toolSpecs)).toEqual(['shipping_track', 'ask_user'])
+    })
+
     it('throws for an empty array target', () => {
       expect(() => Hide.toolSpecs([])).toThrow('Empty array target')
     })
@@ -132,8 +141,9 @@ describe('Hide.toolSpecs', () => {
       expect(() => Hide.toolSpecs().when({ count: -1 })).toThrow('count must be a non-negative integer')
     })
 
-    it('throws for an include entry other than the wildcard', () => {
-      expect(() => Hide.toolSpecs(['toolSpec::billing_search'])).toThrow("must be 'toolSpec::*'")
+    it('throws for an entry without the toolSpec prefix', () => {
+      expect(() => Hide.toolSpecs(['tool::billing_search'])).toThrow("must be 'toolSpec::<name>'")
+      expect(() => Hide.toolSpecs(['!billing_search'])).toThrow("must be 'toolSpec::<name>'")
     })
   })
 
@@ -228,11 +238,32 @@ describe('Hide.toolSpecs', () => {
     })
   })
 
-  describe('exclusions', () => {
-    it('keeps excluded specs visible without consuming keep', async () => {
+  describe('target', () => {
+    it('keeps pinned specs visible without consuming keep', async () => {
       const { agent, handler } = attach(toolSpecs(['toolSpec::*', '!toolSpec::ask_user'], { keep: 1 }))
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['billing_search', 'ask_user'])
+    })
+
+    it('treats a pin-only target as every spec', async () => {
+      const { agent, handler } = attach(toolSpecs(['!toolSpec::ask_user'], { keep: 1 }))
+      const result = await handler(context(agent, catalog))
+      expect(names(result.toolSpecs)).toEqual(['billing_search', 'ask_user'])
+    })
+
+    it('narrows the candidates to named specs and leaves the rest visible', async () => {
+      const search = staticSearch(['billing_summary'])
+      const target = ['toolSpec::billing_search', 'toolSpec::billing_summary']
+      const { agent, handler } = attach(toolSpecs(target, { search, keep: 1 }))
+      const result = await handler(context(agent, catalog))
+      expect(names(result.toolSpecs)).toEqual(['billing_summary', 'shipping_search', 'shipping_track', 'ask_user'])
+    })
+
+    it('lets the wildcard override named candidates', async () => {
+      const search = staticSearch(['shipping_track'])
+      const { agent, handler } = attach(toolSpecs(['toolSpec::billing_search', 'toolSpec::*'], { search, keep: 1 }))
+      const result = await handler(context(agent, catalog))
+      expect(names(result.toolSpecs)).toEqual(['shipping_track'])
     })
 
     it('always keeps the structured-output and retrieval tools', async () => {
@@ -244,6 +275,81 @@ describe('Hide.toolSpecs', () => {
       ]
       const result = await handler(context(agent, withProtected))
       expect(names(result.toolSpecs)).toEqual(['billing_search', STRUCTURED_OUTPUT_TOOL_NAME, RETRIEVAL_TOOL_NAME])
+    })
+  })
+
+  describe('alwaysHide', () => {
+    it('removes the named specs before selection', async () => {
+      const search = staticSearch(['billing_search', 'ask_user'])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2, alwaysHide: ['billing_search'] }))
+      const result = await handler(context(agent, catalog))
+      expect(names(result.toolSpecs)).toEqual(['ask_user'])
+    })
+
+    it('wins over a pin', async () => {
+      const target = ['toolSpec::*', '!toolSpec::ask_user']
+      const { agent, handler } = attach(toolSpecs(target, { keep: 1, alwaysHide: ['ask_user'] }))
+      const result = await handler(context(agent, catalog))
+      expect(names(result.toolSpecs)).toEqual(['billing_search'])
+    })
+
+    it('applies even when count is not met', async () => {
+      const strategy = toolSpecs('toolSpecs', { keep: 1, alwaysHide: ['ask_user'] }).when({ count: 20 })
+      const { agent, handler } = attach(strategy as HideToolSpecsStrategy)
+      const model = countingModel(25)
+      const result = await handler({ ...context(agent, catalog, { model }), projectedInputTokens: 1000 })
+      expect(names(result.toolSpecs)).toEqual([
+        'billing_search',
+        'billing_summary',
+        'shipping_search',
+        'shipping_track',
+      ])
+      expect(result.projectedInputTokens).toBe(975)
+    })
+
+    it('does not count toward the count gate', async () => {
+      const strategy = toolSpecs('toolSpecs', { keep: 1, alwaysHide: ['ask_user'] }).when({ count: 5 })
+      const { agent, handler } = attach(strategy as HideToolSpecsStrategy)
+      const result = await handler(context(agent, catalog))
+      expect(names(result.toolSpecs)).toEqual([
+        'billing_search',
+        'billing_summary',
+        'shipping_search',
+        'shipping_track',
+      ])
+    })
+  })
+
+  describe('onFailure', () => {
+    const broken: SearchStrategy<InMemoryStorage> = {
+      search: async () => {
+        throw new Error('boom')
+      },
+    }
+
+    it('"none" shows only pinned and protected tools when search throws', async () => {
+      const target = ['toolSpec::*', '!toolSpec::ask_user']
+      const { agent, handler } = attach(toolSpecs(target, { search: broken, onFailure: 'none' }))
+      const withProtected = [...catalog, spec(RETRIEVAL_TOOL_NAME, 'Retrieve offloaded content')]
+      const result = await handler(context(agent, withProtected))
+      expect(names(result.toolSpecs)).toEqual(['ask_user', RETRIEVAL_TOOL_NAME])
+    })
+
+    it('"none" shows only pinned tools when nothing matches and nothing can be carried', async () => {
+      const target = ['toolSpec::*', '!toolSpec::ask_user']
+      const { agent, handler } = attach(toolSpecs(target, { search: staticSearch([]), onFailure: 'none' }))
+      const result = await handler(context(agent, catalog))
+      expect(names(result.toolSpecs)).toEqual(['ask_user'])
+    })
+
+    it('"none" still carries a previous selection forward', async () => {
+      const search: SearchStrategy<InMemoryStorage> = {
+        search: async (_storage, query) => (query === 'billing' ? [{ key: 'billing_search', score: 1 }] : []),
+      }
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1, onFailure: 'none' }))
+      await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
+      const result = await handler(context(agent, catalog, { invocationState: {}, messages: [user('thanks')] }))
+      expect(names(result.toolSpecs)).toEqual(['billing_search'])
     })
   })
 
