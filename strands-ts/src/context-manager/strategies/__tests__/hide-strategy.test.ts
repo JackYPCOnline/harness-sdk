@@ -5,6 +5,7 @@ import { AfterInvocationEvent, BeforeInvocationEvent } from '../../../hooks/even
 import { InMemoryStorage } from '../../../storage/in-memory-storage.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
+import { OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
 import { Message, TextBlock, ToolResultBlock } from '../../../types/messages.js'
 import { createMockAgent, invokeTrackedHook } from '../../../__fixtures__/agent-helpers.js'
 import { createStaticSearch } from '../../../__fixtures__/search-helpers.js'
@@ -96,6 +97,9 @@ const catalog = [
   spec('ask_user', 'Ask the user a question'),
 ]
 
+const PROTECTED = [STRUCTURED_OUTPUT_TOOL_NAME, RETRIEVAL_TOOL_NAME, OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME]
+const protectedSpecs = PROTECTED.map((name) => spec(name, 'Protected'))
+
 const names = (specs: readonly ToolSpec[]): string[] => specs.map((entry) => entry.name)
 
 const toolSpecs = (...args: Parameters<typeof Hide.toolSpecs>): HideToolSpecsStrategy =>
@@ -144,6 +148,15 @@ describe('Hide.toolSpecs', () => {
     it('throws for an entry without the toolSpec prefix', () => {
       expect(() => Hide.toolSpecs(['tool::billing_search'])).toThrow("must be 'toolSpec::<name>'")
       expect(() => Hide.toolSpecs(['!billing_search'])).toThrow("must be 'toolSpec::<name>'")
+    })
+
+    it('throws for an empty name or a pinned wildcard', () => {
+      expect(() => Hide.toolSpecs(['toolSpec::'])).toThrow("must be 'toolSpec::<name>'")
+      expect(() => Hide.toolSpecs(['!toolSpec::*'])).toThrow("must be 'toolSpec::<name>'")
+    })
+
+    it('throws when a name is both a candidate and pinned', () => {
+      expect(() => Hide.toolSpecs(['toolSpec::ask_user', '!toolSpec::ask_user'])).toThrow('both a candidate and pinned')
     })
   })
 
@@ -282,13 +295,8 @@ describe('Hide.toolSpecs', () => {
 
     it('always keeps the structured-output and retrieval tools', async () => {
       const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1 }))
-      const withProtected = [
-        ...catalog,
-        spec(STRUCTURED_OUTPUT_TOOL_NAME, 'Return structured output'),
-        spec(RETRIEVAL_TOOL_NAME, 'Retrieve offloaded content'),
-      ]
-      const result = await handler(context(agent, withProtected))
-      expect(names(result.toolSpecs)).toEqual(['billing_search', STRUCTURED_OUTPUT_TOOL_NAME, RETRIEVAL_TOOL_NAME])
+      const result = await handler(context(agent, [...catalog, ...protectedSpecs]))
+      expect(names(result.toolSpecs)).toEqual(['billing_search', ...PROTECTED])
     })
   })
 
@@ -308,11 +316,9 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('cannot hide protected tools', async () => {
-      const alwaysHide = [STRUCTURED_OUTPUT_TOOL_NAME, RETRIEVAL_TOOL_NAME]
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1, alwaysHide }))
-      const withProtected = [...catalog, spec(STRUCTURED_OUTPUT_TOOL_NAME), spec(RETRIEVAL_TOOL_NAME)]
-      const result = await handler(context(agent, withProtected))
-      expect(names(result.toolSpecs)).toEqual(['billing_search', STRUCTURED_OUTPUT_TOOL_NAME, RETRIEVAL_TOOL_NAME])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1, alwaysHide: PROTECTED }))
+      const result = await handler(context(agent, [...catalog, ...protectedSpecs]))
+      expect(names(result.toolSpecs)).toEqual(['billing_search', ...PROTECTED])
     })
 
     it('applies even when count is not met', async () => {
@@ -385,6 +391,23 @@ describe('Hide.toolSpecs', () => {
       expect(result).toBe(input)
     })
 
+    it('still applies alwaysHide when toolChoice is set', async () => {
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1, alwaysHide: ['ask_user'] }))
+      const result = await handler(context(agent, catalog, { toolChoice: { any: {} } }))
+      expect(names(result.toolSpecs)).toEqual([
+        'billing_search',
+        'billing_summary',
+        'shipping_search',
+        'shipping_track',
+      ])
+    })
+
+    it('keeps a forced tool visible even when it is in alwaysHide', async () => {
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1, alwaysHide: ['ask_user', 'shipping_track'] }))
+      const result = await handler(context(agent, catalog, { toolChoice: { tool: { name: 'ask_user' } } }))
+      expect(names(result.toolSpecs)).toEqual(['billing_search', 'billing_summary', 'shipping_search', 'ask_user'])
+    })
+
     it('passes the catalog through when count is not met', async () => {
       const { agent, handler } = attach(
         toolSpecs('toolSpecs', { keep: 1 }).when({ count: 20 }) as HideToolSpecsStrategy
@@ -392,6 +415,25 @@ describe('Hide.toolSpecs', () => {
       const input = context(agent, catalog)
       const result = await handler(input)
       expect(result).toBe(input)
+    })
+
+    it('keeps passing through when the catalog grows past count mid-invocation', async () => {
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1 }).when({ count: 5 }) as HideToolSpecsStrategy)
+      const invocationState: InvocationState = {}
+      const small = catalog.slice(0, 4)
+      await handler(context(agent, small, { invocationState }))
+      const result = await handler(context(agent, catalog, { invocationState, messages: [toolResultOnly()] }))
+      expect(names(result.toolSpecs)).toEqual(names(catalog))
+    })
+
+    it('shows specs that join the catalog after the selection was made', async () => {
+      const search = createStaticSearch<InMemoryStorage>(['billing_search'])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
+      const invocationState: InvocationState = {}
+      await handler(context(agent, catalog, { invocationState }))
+      const grown = [...catalog, spec('loaded_later', 'Loaded by a tool')]
+      const result = await handler(context(agent, grown, { invocationState, messages: [toolResultOnly()] }))
+      expect(names(result.toolSpecs)).toEqual(['billing_search', 'loaded_later'])
     })
 
     it('counts eligible specs, not the whole catalog', async () => {
@@ -412,6 +454,17 @@ describe('Hide.toolSpecs', () => {
       await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
       const result = await handler(context(agent, catalog, { invocationState: {}, messages: [user('thanks')] }))
       expect(names(result.toolSpecs)).toEqual(['billing_search'])
+    })
+
+    it('does not carry forward when the turn names a new topic', async () => {
+      const search: SearchStrategy<InMemoryStorage> = {
+        search: async (_storage, query) => (query === 'billing' ? [{ key: 'billing_search', score: 1 }] : []),
+      }
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
+      await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
+      const followUp = context(agent, catalog, { invocationState: {}, messages: [user('where is my package?')] })
+      const result = await handler(followUp)
+      expect(names(result.toolSpecs)).toEqual(names(catalog))
     })
 
     it('shows every spec when there is nothing to carry forward', async () => {
@@ -534,22 +587,26 @@ describe('Hide.toolSpecs', () => {
       await invokeTrackedHook(agent, new AfterInvocationEvent({ agent, invocationState }))
       await handler(context(agent, catalog, { invocationState }))
       expect(search.search).toHaveBeenCalledTimes(2)
-      expect(Object.keys(invocationState)).toHaveLength(1)
     })
 
-    it('ignores a foreign value under its key', async () => {
-      const { agent, handler } = attach(
-        toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>(['billing_search']), keep: 1 })
-      )
+    it('clears the selection on BeforeInvocationEvent when the state object is reused', async () => {
+      const search = spySearch(['billing_search'])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       const invocationState: InvocationState = {}
       await handler(context(agent, catalog, { invocationState }))
-      const [key] = Object.keys(invocationState)
-      invocationState[key!] = 'not a selection'
-      const result = await handler(context(agent, catalog, { invocationState }))
-      expect(names(result.toolSpecs)).toEqual(['billing_search'])
+      await invokeTrackedHook(agent, new BeforeInvocationEvent({ agent, invocationState }))
+      await handler(context(agent, catalog, { invocationState }))
+      expect(search.search).toHaveBeenCalledTimes(2)
     })
 
-    it('uses a distinct key per strategy instance', async () => {
+    it('leaves invocationState untouched', async () => {
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1 }))
+      const invocationState: InvocationState = {}
+      await handler(context(agent, catalog, { invocationState }))
+      expect(invocationState).toEqual({})
+    })
+
+    it('keeps separate state per strategy instance within one invocation', async () => {
       const first = toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>(['billing_search']), keep: 1 })
       const second = toolSpecs('toolSpecs', {
         search: createStaticSearch<InMemoryStorage>(['shipping_track']),
@@ -558,9 +615,10 @@ describe('Hide.toolSpecs', () => {
       const { agent, handler: firstHandler } = attach(first)
       const { handler: secondHandler } = attach(second)
       const invocationState: InvocationState = {}
-      await firstHandler(context(agent, catalog, { invocationState }))
-      await secondHandler(context(agent, catalog, { invocationState }))
-      expect(Object.keys(invocationState)).toHaveLength(2)
+      const fromFirst = await firstHandler(context(agent, catalog, { invocationState }))
+      const fromSecond = await secondHandler(context(agent, catalog, { invocationState }))
+      expect(names(fromFirst.toolSpecs)).toEqual(['billing_search'])
+      expect(names(fromSecond.toolSpecs)).toEqual(['shipping_track'])
     })
   })
 })

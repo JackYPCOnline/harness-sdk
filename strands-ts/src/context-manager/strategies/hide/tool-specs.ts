@@ -11,8 +11,10 @@
 import { logger } from '../../../logging/logger.js'
 import { InMemoryStorage } from '../../../storage/in-memory-storage.js'
 import { KeywordSearchStrategy } from '../../../storage/search/index.js'
+import { STOP_WORDS, tokenize } from '../../../storage/search/keyword.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
 import { TextBlock } from '../../../types/messages.js'
+import { OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
 import { BaseHideStrategy } from './base.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
@@ -72,12 +74,28 @@ const DEFAULT_KEEP = 10
 const TOOL_SPEC_PREFIX = 'toolSpec::'
 const TOOL_SPEC_WILDCARD = `${TOOL_SPEC_PREFIX}*`
 
-/** Tools the ContextManager or agent loop depends on; never hidden. */
-const PROTECTED_TOOLS: ReadonlySet<string> = new Set([STRUCTURED_OUTPUT_TOOL_NAME, RETRIEVAL_TOOL_NAME])
+/**
+ * Tools that SDK-injected content tells the model to call: the structured-output tool, and the
+ * retrieval tools whose offload placeholders reference them. Never hidden. Third-party plugin
+ * tools with the same property are pinned by the user with `!toolSpec::<name>`.
+ */
+const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
+  STRUCTURED_OUTPUT_TOOL_NAME,
+  RETRIEVAL_TOOL_NAME,
+  OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME,
+])
 
-/** Per-invocation selection. */
+/**
+ * The decision for one invocation, made on its first model call and reused on every later one.
+ * `selected` is undefined when the invocation passes the catalog through (`count` not met, or no
+ * candidates). `considered` is the candidate set at decision time; specs that join the catalog
+ * later in the invocation were never ranked and stay visible.
+ */
 class ToolSpecsState {
-  constructor(readonly selected: ReadonlySet<string>) {}
+  constructor(
+    readonly selected: ReadonlySet<string> | undefined,
+    readonly considered: ReadonlySet<string>
+  ) {}
 }
 
 /**
@@ -126,32 +144,44 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
   }
 
   protected async _transform(context: InvokeModelContext): Promise<InvokeModelContext> {
-    if (context.toolChoice !== undefined) return context
-
     const catalog = context.toolSpecs
-    const shown = catalog.filter((spec) => PROTECTED_TOOLS.has(spec.name) || !this._alwaysHide.has(spec.name))
-    const eligible = shown.filter((spec) => this._isEligible(spec))
-    const gated = this._count !== undefined && eligible.length < this._count
-    if (gated || eligible.length === 0) {
-      return shown.length === catalog.length ? context : this._emit(context, catalog, shown)
-    }
+    const forced =
+      context.toolChoice !== undefined && 'tool' in context.toolChoice ? context.toolChoice.tool.name : undefined
+    const shown = catalog.filter(
+      (spec) => PROTECTED_TOOLS.has(spec.name) || spec.name === forced || !this._alwaysHide.has(spec.name)
+    )
+    if (context.toolChoice !== undefined) return this._emit(context, catalog, shown)
 
-    const state = this._getState(context.invocationState) ?? (await this._open(context, eligible))
-    const visible = shown.filter((spec) => !this._isEligible(spec) || state.selected.has(spec.name))
+    const state = this._getState(context.invocationState) ?? (await this._decide(context, shown))
+    if (state.selected === undefined) return this._emit(context, catalog, shown)
+
+    const { selected, considered } = state
+    const visible = shown.filter(
+      (spec) => !this._isEligible(spec) || !considered.has(spec.name) || selected.has(spec.name)
+    )
     return this._emit(context, catalog, visible)
   }
 
-  private async _open(context: InvokeModelContext, eligible: readonly ToolSpec[]): Promise<ToolSpecsState> {
-    const state = await this._select(context, eligible)
+  /** Make the invocation's decision from the catalog on its first model call and store it. */
+  private async _decide(context: InvokeModelContext, shown: readonly ToolSpec[]): Promise<ToolSpecsState> {
+    const eligible = shown.filter((spec) => this._isEligible(spec))
+    const considered = new Set(eligible.map((spec) => spec.name))
+    const gated = this._count !== undefined && eligible.length < this._count
+    const state =
+      gated || eligible.length === 0
+        ? new ToolSpecsState(undefined, considered)
+        : new ToolSpecsState(await this._select(context, eligible), considered)
     this._setState(context.invocationState, state)
     return state
   }
 
+  /** The context with `visible` as its tool specs; the same context object when nothing was removed. */
   private async _emit(
     context: InvokeModelContext,
     catalog: readonly ToolSpec[],
     visible: ToolSpec[]
   ): Promise<InvokeModelContext> {
+    if (visible.length === catalog.length) return context
     logger.debug(
       `strategy=<${this.name}>, catalog=<${catalog.length}>, visible=<${visible.length}> | tool specs filtered`
     )
@@ -164,25 +194,27 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
   }
 
   /**
-   * Open a selection for this invocation. Falls back, in order, to the previous invocation's
-   * selection (no matches) and then to `onFailure` (nothing to carry, or search failed).
+   * Select the names to keep for this invocation. With no matches, a continuation turn (no content
+   * words, such as "yes, do it") carries the agent's previous selection forward; a turn that names
+   * something new, or a search failure, goes to `onFailure`.
    */
-  private async _select(context: InvokeModelContext, eligible: readonly ToolSpec[]): Promise<ToolSpecsState> {
+  private async _select(context: InvokeModelContext, eligible: readonly ToolSpec[]): Promise<ReadonlySet<string>> {
     const eligibleNames = new Set(eligible.map((spec) => spec.name))
+    const query = queryFromMessages(context.messages)
 
     try {
-      const selected = await this._rank(eligible, queryFromMessages(context.messages))
+      const selected = await this._rank(eligible, query)
       if (selected.size > 0) {
         this._previous.set(context.agent, selected)
-        return new ToolSpecsState(selected)
+        return selected
       }
 
-      const carried = this._carryForward(context.agent, eligibleNames)
+      const carried = isContinuation(query) ? this._carryForward(context.agent, eligibleNames) : undefined
       if (carried) {
-        logger.debug(`strategy=<${this.name}> | no matches, carrying previous selection forward`)
-        return new ToolSpecsState(carried)
+        logger.debug(`strategy=<${this.name}> | continuation turn, carrying previous selection forward`)
+        return carried
       }
-      logger.debug(`strategy=<${this.name}>, onFailure=<${this._onFailure}> | no matches and nothing to carry forward`)
+      logger.debug(`strategy=<${this.name}>, onFailure=<${this._onFailure}> | no matches`)
       return this._fallback(eligibleNames)
     } catch (error) {
       logger.warn(`strategy=<${this.name}>, onFailure=<${this._onFailure}>, error=<${error}> | search failed`)
@@ -213,8 +245,8 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     return selected
   }
 
-  private _fallback(eligibleNames: ReadonlySet<string>): ToolSpecsState {
-    return new ToolSpecsState(this._onFailure === 'all' ? eligibleNames : new Set())
+  private _fallback(eligibleNames: ReadonlySet<string>): ReadonlySet<string> {
+    return this._onFailure === 'all' ? eligibleNames : new Set()
   }
 
   /** The agent's previous selection, intersected with what is eligible now; undefined if nothing survives. */
@@ -256,10 +288,6 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     if (PROTECTED_TOOLS.has(spec.name) || this._pinned.has(spec.name)) return false
     return this._candidates === undefined || this._candidates.has(spec.name)
   }
-
-  protected _isState(value: unknown): value is ToolSpecsState {
-    return value instanceof ToolSpecsState
-  }
 }
 
 /** A storage key for a tool name; plain identifiers pass through unchanged, `/`, `\`, and `.` do not. */
@@ -298,15 +326,19 @@ function resolveTarget(target: HideToolSpecsTarget): {
   let wildcard = false
   for (const entry of target) {
     const isPin = entry.startsWith('!')
-    const name = isPin ? entry.slice(1) : entry
-    if (!name.startsWith(TOOL_SPEC_PREFIX)) {
+    const body = isPin ? entry.slice(1) : entry
+    const name = body.startsWith(TOOL_SPEC_PREFIX) ? body.slice(TOOL_SPEC_PREFIX.length) : ''
+    if (name.length === 0 || (isPin && name === '*')) {
       throw new Error(
         `Hide targets must be '${TOOL_SPEC_PREFIX}<name>', '${TOOL_SPEC_WILDCARD}', or '!${TOOL_SPEC_PREFIX}<name>', got '${entry}'`
       )
     }
-    if (isPin) pinned.add(name.slice(TOOL_SPEC_PREFIX.length))
-    else if (entry === TOOL_SPEC_WILDCARD) wildcard = true
-    else candidates.add(name.slice(TOOL_SPEC_PREFIX.length))
+    if (isPin) pinned.add(name)
+    else if (name === '*') wildcard = true
+    else candidates.add(name)
+  }
+  for (const name of pinned) {
+    if (candidates.has(name)) throw new Error(`'${TOOL_SPEC_PREFIX}${name}' is both a candidate and pinned`)
   }
   return { candidates: wildcard || candidates.size === 0 ? undefined : candidates, pinned }
 }
@@ -330,3 +362,40 @@ function queryFromMessages(messages: readonly Message[]): string {
 function hasUsageBaseline(messages: readonly Message[]): boolean {
   return messages.some((message) => message.role === 'assistant' && message.metadata?.usage !== undefined)
 }
+/**
+ * A turn made only of function words and acknowledgements ("yes, do it", "ok thanks") continues
+ * the previous topic. Anything else that fails to match is treated as new and goes to `onFailure`,
+ * since showing every tool costs tokens while carrying stale tools costs correctness.
+ */
+function isContinuation(query: string): boolean {
+  for (const token of tokenize(query)) {
+    if (token.length > 1 && !STOP_WORDS.has(token) && !ACKNOWLEDGEMENTS.has(token)) return false
+  }
+  return true
+}
+
+const ACKNOWLEDGEMENTS: ReadonlySet<string> = new Set([
+  'yes',
+  'yeah',
+  'yep',
+  'no',
+  'nope',
+  'ok',
+  'okay',
+  'sure',
+  'fine',
+  'good',
+  'great',
+  'right',
+  'correct',
+  'thanks',
+  'thank',
+  'please',
+  'go',
+  'ahead',
+  'proceed',
+  'continue',
+  'confirm',
+  'confirmed',
+  'done',
+])

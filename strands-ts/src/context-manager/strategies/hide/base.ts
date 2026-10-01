@@ -41,9 +41,6 @@ export interface HideStrategyBuilder extends ContextStrategy {
   when(conditions: HideConditions): ContextStrategy
 }
 
-const STATE_KEY_PREFIX = 'strands'
-let nextInstanceId = 1
-
 /**
  * Shared hide logic: middleware registration, per-invocation state, and the `count` gate.
  * Subclasses implement `_transform` to filter one field of the model input.
@@ -54,7 +51,11 @@ export abstract class BaseHideStrategy<TState extends object> implements Context
   abstract readonly name: string
 
   protected readonly _count: number | undefined
-  private readonly _instanceId = nextInstanceId++
+  /**
+   * Per-invocation state, keyed by the invocation's state object. Callers may reuse one
+   * `invocationState` object across invocations, so the boundary hooks still clear it.
+   */
+  private readonly _state = new WeakMap<InvocationState, TState>()
 
   constructor(conditions?: HideConditions) {
     if (conditions?.count !== undefined && (!Number.isInteger(conditions.count) || conditions.count < 0)) {
@@ -81,24 +82,15 @@ export abstract class BaseHideStrategy<TState extends object> implements Context
   /** Filter the model input for one call. */
   protected abstract _transform(context: InvokeModelContext): Promise<InvokeModelContext>
 
-  /** Narrow a stored value to this strategy's state type; foreign values are ignored. */
-  protected abstract _isState(value: unknown): value is TState
-
   protected _getState(invocationState: InvocationState): TState | undefined {
-    const value = invocationState[this._stateKey]
-    return this._isState(value) ? value : undefined
+    return this._state.get(invocationState)
   }
 
   protected _setState(invocationState: InvocationState, state: TState): void {
-    invocationState[this._stateKey] = state
+    this._state.set(invocationState, state)
   }
 
   private _clearState(invocationState: InvocationState): void {
-    if (this._getState(invocationState) !== undefined) delete invocationState[this._stateKey]
-  }
-
-  /** One key per strategy instance, so two hide entries in one list keep separate state. */
-  private get _stateKey(): string {
-    return `${STATE_KEY_PREFIX}:${this.name}:${this._instanceId}`
+    this._state.delete(invocationState)
   }
 }
