@@ -13,6 +13,8 @@ import { HideToolSpecsStrategy } from './tool-specs.js'
 export type { HideConditions, HideStrategyBuilder } from './base.js'
 export type { HideFailurePolicy, HideToolSpecsConfig, HideToolSpecsTarget } from './tool-specs.js'
 export { HideToolSpecsStrategy } from './tool-specs.js'
+export type { ToolSearchResult, ToolSearchStrategy } from './tool-search.js'
+export { KeywordToolSearch } from './tool-search.js'
 
 /**
  * Hide strategy builder namespace.
@@ -37,8 +39,8 @@ interface HideNamespace {
  * Hide.toolSpecs(['toolSpec::billing_search', 'toolSpec::billing_summary'], { keep: 1 })
  * // Never show debug_dump, and show only pinned tools if search fails
  * Hide.toolSpecs('toolSpecs', { alwaysHide: ['debug_dump'], onFailure: 'none' })
- * // Rank with a different storage search strategy
- * Hide.toolSpecs('toolSpecs', { search: mySearchStrategy })
+ * // Rank with a custom ToolSearchStrategy (an LLM judge, embeddings, ...)
+ * Hide.toolSpecs('toolSpecs', { search: myToolSearch })
  * ```
  */
 export const Hide: HideNamespace = {

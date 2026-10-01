@@ -5,10 +5,9 @@ import { RETRIEVAL_TOOL_NAME } from '../retrieval-tool.js'
 import { Hide } from '../strategies/hide/index.js'
 import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 import { createMockTool } from '../../__fixtures__/tool-helpers.js'
-import { createStaticSearch } from '../../__fixtures__/search-helpers.js'
+import { createStaticToolSearch } from '../../__fixtures__/search-helpers.js'
 import { TextBlock, ToolUseBlock } from '../../types/messages.js'
-import type { InMemoryStorage } from '../../storage/in-memory-storage.js'
-import type { SearchStrategy } from '../../storage/search/index.js'
+import type { ToolSearchStrategy } from '../strategies/hide/index.js'
 import type { Message } from '../../types/messages.js'
 import type { ModelStreamEvent } from '../../models/streaming.js'
 import type { StreamOptions } from '../../models/model.js'
@@ -32,7 +31,7 @@ describe('Hide through ContextManager', () => {
       tools,
       printer: false,
       contextManager: new ContextManager({
-        strategies: [Hide.toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>(['beta']), keep: 1 })],
+        strategies: [Hide.toolSpecs('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 })],
         stash: false,
       }),
     })
@@ -48,7 +47,7 @@ describe('Hide through ContextManager', () => {
       .addTurn(new ToolUseBlock({ name: 'beta', toolUseId: 'use-1', input: {} }))
       .addTurn(new TextBlock('done'))
     const tools = ['alpha', 'beta', 'gamma'].map((name) => createMockTool(name, () => 'ok'))
-    const search = createStaticSearch<InMemoryStorage>(['beta'])
+    const search = createStaticToolSearch(['beta'])
     const agent = new Agent({
       model,
       tools,
@@ -67,8 +66,8 @@ describe('Hide through ContextManager', () => {
   it('carries the selection into a follow-up invocation with no matches', async () => {
     const model = new RecordingModel().addTurn(new TextBlock('done')).addTurn(new TextBlock('done'))
     const tools = ['alpha', 'beta', 'gamma'].map((name) => createMockTool(name, () => 'ok'))
-    const search: SearchStrategy<InMemoryStorage> = {
-      search: async (_storage, query) => (query === 'hello' ? [{ key: 'beta', score: 1 }] : []),
+    const search: ToolSearchStrategy = {
+      search: async (query) => (query === 'hello' ? [{ name: 'beta', score: 1 }] : []),
     }
     const agent = new Agent({
       model,
@@ -96,7 +95,7 @@ describe('Hide through ContextManager', () => {
       contextManager: new ContextManager({
         strategies: [
           'largeToolOffloading',
-          Hide.toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>(['beta']), keep: 1 }),
+          Hide.toolSpecs('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 }),
         ],
       }),
     })

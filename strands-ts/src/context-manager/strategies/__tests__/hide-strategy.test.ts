@@ -1,17 +1,16 @@
 import { describe, it, expect, vi } from 'vitest'
-import { Hide, HideToolSpecsStrategy } from '../hide/index.js'
+import { Hide, HideToolSpecsStrategy, KeywordToolSearch } from '../hide/index.js'
 import { InvokeModelStage } from '../../../middleware/stages.js'
 import { AfterInvocationEvent, BeforeInvocationEvent } from '../../../hooks/events.js'
-import { InMemoryStorage } from '../../../storage/in-memory-storage.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
 import { OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
 import { Message, TextBlock, ToolResultBlock } from '../../../types/messages.js'
 import { createMockAgent, invokeTrackedHook } from '../../../__fixtures__/agent-helpers.js'
-import { createStaticSearch } from '../../../__fixtures__/search-helpers.js'
+import { createStaticToolSearch } from '../../../__fixtures__/search-helpers.js'
 import type { MockAgent } from '../../../__fixtures__/agent-helpers.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
-import type { SearchStrategy } from '../../../storage/search/index.js'
+import type { ToolSearchStrategy } from '../hide/index.js'
 import type { ToolSpec } from '../../../tools/types.js'
 import type { InvocationState } from '../../../types/agent.js'
 
@@ -33,9 +32,9 @@ function attach(strategy: HideToolSpecsStrategy): { agent: MockAgent; handler: I
   return { agent, handler }
 }
 
-/** A search strategy whose `search` is a spy returning fixed keys. */
-function spySearch(keys: string[]): SearchStrategy<InMemoryStorage> & { search: ReturnType<typeof vi.fn> } {
-  return { search: vi.fn(async () => keys.map((key, index) => ({ key, score: keys.length - index }))) }
+/** A tool search strategy whose `search` is a spy returning fixed names. */
+function spySearch(names: string[]): ToolSearchStrategy & { search: ReturnType<typeof vi.fn> } {
+  return { search: vi.fn(async () => names.map((name, index) => ({ name, score: names.length - index }))) }
 }
 
 function spec(name: string, description = '', properties?: Record<string, { description?: string }>): ToolSpec {
@@ -108,14 +107,14 @@ const toolSpecs = (...args: Parameters<typeof Hide.toolSpecs>): HideToolSpecsStr
 describe('Hide.toolSpecs', () => {
   describe('construction', () => {
     it('defaults the target to every tool spec', async () => {
-      const search = createStaticSearch<InMemoryStorage>(['shipping_track'])
+      const search = createStaticToolSearch(['shipping_track'])
       const { agent, handler } = attach(toolSpecs(undefined, { search, keep: 1 }))
       const result = await handler(context(agent, catalog))
       expect(result.toolSpecs.map((entry) => entry.name)).toEqual(['shipping_track'])
     })
 
     it('when() returns a new strategy and leaves the original ungated', async () => {
-      const base = toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>(['shipping_track']), keep: 1 })
+      const base = toolSpecs('toolSpecs', { search: createStaticToolSearch(['shipping_track']), keep: 1 })
       const gated = base.when({ count: 20 })
       expect(gated).not.toBe(base)
       expect(gated.name).toBe('hide:toolSpecs')
@@ -125,7 +124,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('when() carries the full config across', async () => {
-      const search = createStaticSearch<InMemoryStorage>(['shipping_track'])
+      const search = createStaticToolSearch(['shipping_track'])
       const config = { search, keep: 1, alwaysHide: ['billing_search'], onFailure: 'none' as const }
       const gated = toolSpecs(['toolSpec::*', '!toolSpec::ask_user'], config).when({ count: 0 })
       const { agent, handler } = attach(gated as HideToolSpecsStrategy)
@@ -184,7 +183,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('emits in catalog order even when search ranks differently', async () => {
-      const search = createStaticSearch<InMemoryStorage>(['shipping_track', 'billing_search'])
+      const search = createStaticToolSearch(['shipping_track', 'billing_search'])
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2 }))
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['billing_search', 'shipping_track'])
@@ -202,7 +201,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('intersects a stored selection with the current catalog', async () => {
-      const search = createStaticSearch<InMemoryStorage>(['billing_search', 'shipping_track'])
+      const search = createStaticToolSearch(['billing_search', 'shipping_track'])
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2 }))
       const invocationState: InvocationState = {}
       await handler(context(agent, catalog, { invocationState }))
@@ -212,10 +211,8 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('keeps separate selections for concurrent invocations', async () => {
-      const search: SearchStrategy<InMemoryStorage> = {
-        search: async (_storage, query) => [
-          { key: query.includes('billing') ? 'billing_search' : 'shipping_search', score: 1 },
-        ],
+      const search: ToolSearchStrategy = {
+        search: async (query) => [{ name: query.includes('billing') ? 'billing_search' : 'shipping_search', score: 1 }],
       }
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       const billing = await handler(context(agent, catalog, { invocationState: {} }))
@@ -231,37 +228,73 @@ describe('Hide.toolSpecs', () => {
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search }))
       const messages = [user('first'), user('  track the shipment  '), toolResultOnly()]
       await handler(context(agent, catalog, { messages }))
-      expect(search.search).toHaveBeenCalledWith(expect.any(InMemoryStorage), 'track the shipment')
+      expect(search.search).toHaveBeenCalledWith('track the shipment', expect.any(Array), 10)
     })
 
-    it('indexes only the eligible specs, keyed by tool name', async () => {
-      let indexed: string[] = []
-      let lookupText = ''
-      const search: SearchStrategy<InMemoryStorage> = {
-        search: async (storage) => {
-          indexed = await storage.list('')
-          lookupText = new TextDecoder().decode((await storage.read('lookup')) ?? new Uint8Array())
-          return []
-        },
-      }
-      const lookup = spec('lookup', 'Find a record', { account_id: { description: 'Customer account id' } })
-      const { agent, handler } = attach(toolSpecs(['toolSpec::*', '!toolSpec::ask_user'], { search }))
-      await handler(context(agent, [...catalog, lookup]))
-      expect(indexed).toEqual(['billing_search', 'billing_summary', 'lookup', 'shipping_search', 'shipping_track'])
-      expect(lookupText).toBe('lookup Find a record account_id Customer account id')
+    it('passes only the eligible specs as candidates, with keep as the limit', async () => {
+      const search = spySearch([])
+      const { agent, handler } = attach(toolSpecs(['toolSpec::*', '!toolSpec::ask_user'], { search, keep: 3 }))
+      await handler(context(agent, catalog))
+      const eligible = catalog.filter((entry) => entry.name !== 'ask_user')
+      expect(search.search).toHaveBeenCalledWith(expect.any(String), eligible, 3)
     })
 
-    it('selects tools whose names are not valid storage keys', async () => {
-      const slashed = [spec('mcp//server/search', 'Search'), spec('..', 'Dots'), spec('back\\slash', 'Slash')]
-      const search: SearchStrategy<InMemoryStorage> = {
-        search: async (storage) => {
-          const encoded = (await storage.list('')).filter((key) => key.includes('%'))
-          return encoded.map((key) => ({ key, score: 1 }))
-        },
-      }
+    it('fills the keep budget from unmatched candidates in catalog order', async () => {
+      const search = createStaticToolSearch(['shipping_track'])
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 3 }))
-      const result = await handler(context(agent, [...catalog, ...slashed]))
-      expect(names(result.toolSpecs)).toEqual(['mcp//server/search', '..', 'back\\slash'])
+      const result = await handler(context(agent, catalog))
+      expect(names(result.toolSpecs)).toEqual(['billing_search', 'billing_summary', 'shipping_track'])
+    })
+
+    it('shows the whole catalog when it fits within keep', async () => {
+      const search = createStaticToolSearch(['shipping_track'])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 10 }))
+      const input = context(agent, catalog)
+      const result = await handler(input)
+      expect(result).toBe(input)
+    })
+  })
+
+  describe('KeywordToolSearch', () => {
+    const weather = [
+      spec('get_weather', 'Current conditions for a city', { city: { description: 'City name' } }),
+      spec('city_guide', 'Weather-independent sightseeing tips'),
+      spec('bookFlight', 'Book a flight to a destination'),
+    ]
+    const rank = async (query: string, limit = 10): Promise<string[]> =>
+      (await KeywordToolSearch.search(query, weather, limit)).map((match) => match.name)
+
+    it('splits snake_case names and weights name hits over description hits', async () => {
+      expect(await rank('weather Paris')).toEqual(['get_weather', 'city_guide'])
+    })
+
+    it('splits camelCase names', async () => {
+      expect(await rank('book a flight')).toEqual(['bookFlight'])
+    })
+
+    it('matches input-property names and descriptions', async () => {
+      expect(await rank('name')).toEqual(['get_weather'])
+    })
+
+    it('ignores stop words and single characters', async () => {
+      expect(await rank('the a to')).toEqual([])
+      expect(await rank('is it in the city')).toEqual(['city_guide', 'get_weather'])
+    })
+
+    it('breaks ties by candidate order', async () => {
+      expect(await rank('tips conditions')).toEqual(['get_weather', 'city_guide'])
+    })
+
+    it('respects the limit', async () => {
+      expect(await rank('city', 1)).toEqual(['city_guide'])
+    })
+
+    it('returns scores with higher meaning more relevant', async () => {
+      const results = await KeywordToolSearch.search('weather', weather, 10)
+      expect(results).toEqual([
+        { name: 'get_weather', score: 3 },
+        { name: 'city_guide', score: 1 },
+      ])
     })
   })
 
@@ -279,7 +312,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('narrows the candidates to named specs and leaves the rest visible', async () => {
-      const search = createStaticSearch<InMemoryStorage>(['billing_summary'])
+      const search = createStaticToolSearch(['billing_summary'])
       const target = ['toolSpec::billing_search', 'toolSpec::billing_summary']
       const { agent, handler } = attach(toolSpecs(target, { search, keep: 1 }))
       const result = await handler(context(agent, catalog))
@@ -287,7 +320,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('lets the wildcard override named candidates', async () => {
-      const search = createStaticSearch<InMemoryStorage>(['shipping_track'])
+      const search = createStaticToolSearch(['shipping_track'])
       const { agent, handler } = attach(toolSpecs(['toolSpec::billing_search', 'toolSpec::*'], { search, keep: 1 }))
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['shipping_track'])
@@ -302,8 +335,8 @@ describe('Hide.toolSpecs', () => {
 
   describe('alwaysHide', () => {
     it('removes the named specs before selection', async () => {
-      const search = createStaticSearch<InMemoryStorage>(['billing_search', 'ask_user'])
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2, alwaysHide: ['billing_search'] }))
+      const search = createStaticToolSearch(['billing_search', 'ask_user'])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1, alwaysHide: ['billing_search'] }))
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['ask_user'])
     })
@@ -349,7 +382,7 @@ describe('Hide.toolSpecs', () => {
   })
 
   describe('onFailure', () => {
-    const broken: SearchStrategy<InMemoryStorage> = {
+    const broken: ToolSearchStrategy = {
       search: async () => {
         throw new Error('boom')
       },
@@ -365,16 +398,14 @@ describe('Hide.toolSpecs', () => {
 
     it('"none" shows only pinned tools when nothing matches and nothing can be carried', async () => {
       const target = ['toolSpec::*', '!toolSpec::ask_user']
-      const { agent, handler } = attach(
-        toolSpecs(target, { search: createStaticSearch<InMemoryStorage>([]), onFailure: 'none' })
-      )
+      const { agent, handler } = attach(toolSpecs(target, { search: createStaticToolSearch([]), onFailure: 'none' }))
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['ask_user'])
     })
 
     it('"none" still carries a previous selection forward', async () => {
-      const search: SearchStrategy<InMemoryStorage> = {
-        search: async (_storage, query) => (query === 'billing' ? [{ key: 'billing_search', score: 1 }] : []),
+      const search: ToolSearchStrategy = {
+        search: async (query) => (query === 'billing' ? [{ name: 'billing_search', score: 1 }] : []),
       }
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1, onFailure: 'none' }))
       await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
@@ -427,7 +458,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('shows specs that join the catalog after the selection was made', async () => {
-      const search = createStaticSearch<InMemoryStorage>(['billing_search'])
+      const search = createStaticToolSearch(['billing_search'])
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       const invocationState: InvocationState = {}
       await handler(context(agent, catalog, { invocationState }))
@@ -447,8 +478,8 @@ describe('Hide.toolSpecs', () => {
 
   describe('no matches', () => {
     it('carries the previous invocation selection forward', async () => {
-      const search: SearchStrategy<InMemoryStorage> = {
-        search: async (_storage, query) => (query === 'billing' ? [{ key: 'billing_search', score: 1 }] : []),
+      const search: ToolSearchStrategy = {
+        search: async (query) => (query === 'billing' ? [{ name: 'billing_search', score: 1 }] : []),
       }
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
@@ -457,8 +488,8 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('does not carry forward when the turn names a new topic', async () => {
-      const search: SearchStrategy<InMemoryStorage> = {
-        search: async (_storage, query) => (query === 'billing' ? [{ key: 'billing_search', score: 1 }] : []),
+      const search: ToolSearchStrategy = {
+        search: async (query) => (query === 'billing' ? [{ name: 'billing_search', score: 1 }] : []),
       }
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
@@ -468,16 +499,14 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('shows every spec when there is nothing to carry forward', async () => {
-      const { agent, handler } = attach(
-        toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>([]), keep: 1 })
-      )
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search: createStaticToolSearch([]), keep: 1 }))
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(names(catalog))
     })
 
     it('keeps carried selections separate per agent', async () => {
-      const search: SearchStrategy<InMemoryStorage> = {
-        search: async (_storage, query) => (query === 'billing' ? [{ key: 'billing_search', score: 1 }] : []),
+      const search: ToolSearchStrategy = {
+        search: async (query) => (query === 'billing' ? [{ name: 'billing_search', score: 1 }] : []),
       }
       const strategy = toolSpecs('toolSpecs', { search, keep: 1 })
       const { agent: first, handler } = attach(strategy)
@@ -497,8 +526,8 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('shows every spec when the carried selection is no longer in the catalog', async () => {
-      const search: SearchStrategy<InMemoryStorage> = {
-        search: async (_storage, query) => (query === 'billing' ? [{ key: 'billing_search', score: 1 }] : []),
+      const search: ToolSearchStrategy = {
+        search: async (query) => (query === 'billing' ? [{ name: 'billing_search', score: 1 }] : []),
       }
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
@@ -510,7 +539,7 @@ describe('Hide.toolSpecs', () => {
 
   describe('fail-open', () => {
     it('shows every eligible spec when search throws', async () => {
-      const search: SearchStrategy<InMemoryStorage> = {
+      const search: ToolSearchStrategy = {
         search: async () => {
           throw new Error('boom')
         },
@@ -520,16 +549,16 @@ describe('Hide.toolSpecs', () => {
       expect(names(result.toolSpecs)).toEqual(names(catalog))
     })
 
-    it('ignores keys that are not in the catalog', async () => {
-      const search = createStaticSearch<InMemoryStorage>(['ghost', 'billing_search'])
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2 }))
+    it('ignores names that are not in the catalog', async () => {
+      const search = createStaticToolSearch(['ghost', 'shipping_track'])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       const result = await handler(context(agent, catalog))
-      expect(names(result.toolSpecs)).toEqual(['billing_search'])
+      expect(names(result.toolSpecs)).toEqual(['shipping_track'])
     })
   })
 
   describe('token projection', () => {
-    const search = createStaticSearch<InMemoryStorage>(['billing_search'])
+    const search = createStaticToolSearch(['billing_search'])
 
     it('subtracts the removed specs on a cold start', async () => {
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
@@ -551,9 +580,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('leaves the projection alone when nothing was hidden', async () => {
-      const { agent, handler } = attach(
-        toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>([]), keep: 1 })
-      )
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search: createStaticToolSearch([]), keep: 1 }))
       const model = countingModel()
       const result = await handler({ ...context(agent, catalog, { model }), projectedInputTokens: 1000 })
       expect(result.projectedInputTokens).toBe(1000)
@@ -607,9 +634,9 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('keeps separate state per strategy instance within one invocation', async () => {
-      const first = toolSpecs('toolSpecs', { search: createStaticSearch<InMemoryStorage>(['billing_search']), keep: 1 })
+      const first = toolSpecs('toolSpecs', { search: createStaticToolSearch(['billing_search']), keep: 1 })
       const second = toolSpecs('toolSpecs', {
-        search: createStaticSearch<InMemoryStorage>(['shipping_track']),
+        search: createStaticToolSearch(['shipping_track']),
         keep: 1,
       })
       const { agent, handler: firstHandler } = attach(first)

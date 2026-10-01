@@ -9,28 +9,26 @@
  */
 
 import { logger } from '../../../logging/logger.js'
-import { InMemoryStorage } from '../../../storage/in-memory-storage.js'
-import { KeywordSearchStrategy } from '../../../storage/search/index.js'
-import { STOP_WORDS, tokenize } from '../../../storage/search/keyword.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
 import { TextBlock } from '../../../types/messages.js'
 import { OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
 import { BaseHideStrategy } from './base.js'
+import { KeywordToolSearch, contentTokens } from './tool-search.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
-import type { SearchStrategy } from '../../../storage/search/index.js'
 import type { ToolSpec } from '../../../tools/types.js'
 import type { LocalAgent } from '../../../types/agent.js'
 import type { Message } from '../../../types/messages.js'
 import type { ContextStrategy } from '../../types.js'
 import type { HideConditions } from './base.js'
+import type { ToolSearchStrategy } from './tool-search.js'
 
 /**
  * Target for `Hide.toolSpecs` — which specs are candidates for hiding.
  *
  * - `"toolSpecs"` — every tool spec on the call
  * - `string[]` — `toolSpec::*` (every spec) or `toolSpec::<name>` entries name the candidates;
- *   a `!toolSpec::<name>` entry is pinned: always visible, never a candidate, and does not consume `keep`
+ *   a `!toolSpec::<name>` entry is pinned: always visible, never a candidate, and outside the `keep` budget
  *
  * @internal
  */
@@ -53,12 +51,12 @@ export type HideFailurePolicy = 'all' | 'none'
  * @internal
  */
 export interface HideToolSpecsConfig {
+  /** Ranks candidates by relevance to the latest user text. Defaults to `KeywordToolSearch`. */
+  search?: ToolSearchStrategy
   /**
-   * Ranks specs by relevance to the latest user message. Runs over a per-invocation
-   * `InMemoryStorage` index of the candidate specs. Defaults to `KeywordSearchStrategy`.
+   * How many candidates the model sees: the best matches first, then unmatched candidates in
+   * catalog order until the budget is met. Pinned and protected tools are on top. Defaults to 10.
    */
-  search?: SearchStrategy<InMemoryStorage>
-  /** How many candidates to keep visible. Defaults to 10. */
   keep?: number
   /**
    * Tool names the model never sees, regardless of search, `count`, or pinning. Tools the
@@ -109,7 +107,7 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
 
   private readonly _target: HideToolSpecsTarget
   private readonly _config: HideToolSpecsConfig
-  private readonly _search: SearchStrategy<InMemoryStorage>
+  private readonly _search: ToolSearchStrategy
   private readonly _keep: number
   private readonly _alwaysHide: ReadonlySet<string>
   private readonly _onFailure: HideFailurePolicy
@@ -130,7 +128,7 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     }
     this._target = target
     this._config = config ?? {}
-    this._search = config?.search ?? KeywordSearchStrategy
+    this._search = config?.search ?? KeywordToolSearch
     this._keep = config?.keep ?? DEFAULT_KEEP
     this._alwaysHide = new Set(config?.alwaysHide ?? [])
     this._onFailure = config?.onFailure ?? 'all'
@@ -223,24 +221,21 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
   }
 
   /**
-   * Rank the candidates and return the top `keep` names. Storage keys are path-normalized and
-   * tool names are not, so names are URI-encoded into keys and mapped back from results.
+   * The best `keep` matches among the candidates, filled from unmatched candidates in catalog
+   * order when there are fewer matches than the budget. Empty when nothing matched.
    */
   private async _rank(eligible: readonly ToolSpec[], query: string): Promise<Set<string>> {
-    const index = new InMemoryStorage(this._search)
-    const encoder = new TextEncoder()
-    const nameByKey = new Map<string, string>()
-    for (const spec of eligible) {
-      const key = indexKey(spec.name)
-      nameByKey.set(key, spec.name)
-      await index.write(key, encoder.encode(searchableText(spec)))
-    }
-
+    const eligibleNames = new Set(eligible.map((spec) => spec.name))
     const selected = new Set<string>()
-    for (const result of await this._search.search(index, query)) {
-      const name = nameByKey.get(result.key)
-      if (name !== undefined) selected.add(name)
+    for (const result of await this._search.search(query, eligible, this._keep)) {
       if (selected.size >= this._keep) break
+      if (eligibleNames.has(result.name)) selected.add(result.name)
+    }
+    if (selected.size === 0) return selected
+
+    for (const spec of eligible) {
+      if (selected.size >= this._keep) break
+      selected.add(spec.name)
     }
     return selected
   }
@@ -288,27 +283,6 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     if (PROTECTED_TOOLS.has(spec.name) || this._pinned.has(spec.name)) return false
     return this._candidates === undefined || this._candidates.has(spec.name)
   }
-}
-
-/** A storage key for a tool name; plain identifiers pass through unchanged, `/`, `\`, and `.` do not. */
-function indexKey(name: string): string {
-  return encodeURIComponent(name).replaceAll('.', '%2E')
-}
-
-/** The searchable text of a spec: name, description, and input-property names and descriptions. */
-function searchableText(spec: ToolSpec): string {
-  const properties = spec.inputSchema?.properties
-  const propertyText =
-    properties && typeof properties === 'object'
-      ? Object.entries(properties)
-          .map(([key, value]) => {
-            const description =
-              value && typeof value === 'object' && 'description' in value ? String(value.description) : ''
-            return `${key} ${description}`
-          })
-          .join(' ')
-      : ''
-  return `${spec.name} ${spec.description} ${propertyText}`
 }
 
 /**
@@ -368,8 +342,8 @@ function hasUsageBaseline(messages: readonly Message[]): boolean {
  * since showing every tool costs tokens while carrying stale tools costs correctness.
  */
 function isContinuation(query: string): boolean {
-  for (const token of tokenize(query)) {
-    if (token.length > 1 && !STOP_WORDS.has(token) && !ACKNOWLEDGEMENTS.has(token)) return false
+  for (const token of contentTokens(query)) {
+    if (!ACKNOWLEDGEMENTS.has(token)) return false
   }
   return true
 }
