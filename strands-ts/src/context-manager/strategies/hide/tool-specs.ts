@@ -55,13 +55,13 @@ export interface HideToolSpecsConfig {
   search?: ToolSearchStrategy
   /**
    * How many candidates the model sees: the best matches first, then unmatched candidates in
-   * catalog order until the budget is met. Pinned and protected tools are on top. Defaults to 10.
+   * catalog order until the budget is met. A catalog that fits within the budget passes through.
+   * Pinned and protected tools are shown in addition. Defaults to 10.
    */
   keep?: number
   /**
-   * Tool names the model never sees, regardless of search, `count`, or pinning. Tools the
-   * ContextManager and agent loop depend on (`structured_output`, `retrieve_context`) are
-   * never hidden, even if listed here.
+   * Tool names the model never sees, regardless of search, `count`, or pinning. Tools that
+   * SDK-injected content tells the model to call are never hidden, even if listed here.
    */
   alwaysHide?: readonly string[]
   /** What to show when no selection can be made. Defaults to `"all"`. */
@@ -84,16 +84,14 @@ const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
 ])
 
 /**
- * The decision for one invocation, made on its first model call and reused on every later one.
- * `selected` is undefined when the invocation passes the catalog through (`count` not met, or no
- * candidates). `considered` is the candidate set at decision time; specs that join the catalog
- * later in the invocation were never ranked and stay visible.
+ * The decision for one invocation, made on its first unforced model call and reused on every
+ * later one. Specs that join the catalog later in the invocation were never ranked and stay visible.
  */
-class ToolSpecsState {
-  constructor(
-    readonly selected: ReadonlySet<string> | undefined,
-    readonly considered: ReadonlySet<string>
-  ) {}
+interface ToolSpecsState {
+  /** Names to show among the candidates; undefined when the catalog passes through. */
+  selected: ReadonlySet<string> | undefined
+  /** The candidate names at decision time. */
+  considered: ReadonlySet<string>
 }
 
 /**
@@ -115,7 +113,7 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
   private readonly _candidates: ReadonlySet<string> | undefined
   /** Names from `!toolSpec::<name>` entries; always visible, never candidates. */
   private readonly _pinned: ReadonlySet<string>
-  /** Each agent's last search-backed selection, carried forward when a follow-up turn has no matches. */
+  /** The candidates each agent's model last saw, carried forward when a continuation turn has no matches. */
   private readonly _previous = new WeakMap<LocalAgent, ReadonlySet<string>>()
 
   constructor(target: HideToolSpecsTarget, config?: HideToolSpecsConfig, conditions?: HideConditions) {
@@ -160,15 +158,21 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     return this._emit(context, catalog, visible)
   }
 
-  /** Make the invocation's decision from the catalog on its first model call and store it. */
+  /**
+   * Make the invocation's decision from the catalog on its first model call and store it. The
+   * catalog passes through when `count` is not met or the candidates already fit within `keep`.
+   */
   private async _decide(context: InvokeModelContext, shown: readonly ToolSpec[]): Promise<ToolSpecsState> {
     const eligible = shown.filter((spec) => this._isEligible(spec))
     const considered = new Set(eligible.map((spec) => spec.name))
     const gated = this._count !== undefined && eligible.length < this._count
-    const state =
-      gated || eligible.length === 0
-        ? new ToolSpecsState(undefined, considered)
-        : new ToolSpecsState(await this._select(context, eligible), considered)
+    let selected: ReadonlySet<string> | undefined
+    if (gated || eligible.length <= this._keep) {
+      this._previous.set(context.agent, considered)
+    } else {
+      selected = await this._select(context, eligible)
+    }
+    const state = { selected, considered }
     this._setState(context.invocationState, state)
     return state
   }
@@ -192,32 +196,29 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
   }
 
   /**
-   * Select the names to keep for this invocation. With no matches, a continuation turn (no content
-   * words, such as "yes, do it") carries the agent's previous selection forward; a turn that names
-   * something new, or a search failure, goes to `onFailure`.
+   * Select the names to show for this invocation and record them as what the agent's model last
+   * saw. With no matches, a continuation turn (no content words, such as "yes, do it") carries that
+   * previous view forward; a turn that names something new, or a search failure, goes to `onFailure`.
    */
   private async _select(context: InvokeModelContext, eligible: readonly ToolSpec[]): Promise<ReadonlySet<string>> {
     const eligibleNames = new Set(eligible.map((spec) => spec.name))
     const query = queryFromMessages(context.messages)
 
+    let selected: ReadonlySet<string>
     try {
-      const selected = await this._rank(eligible, query)
-      if (selected.size > 0) {
-        this._previous.set(context.agent, selected)
-        return selected
+      selected = await this._rank(eligible, query)
+      if (selected.size === 0) {
+        const carried = isContinuation(query) ? this._carryForward(context.agent, eligibleNames) : undefined
+        if (carried) logger.debug(`strategy=<${this.name}> | continuation turn, carrying previous view forward`)
+        else logger.debug(`strategy=<${this.name}>, onFailure=<${this._onFailure}> | no matches`)
+        selected = carried ?? this._fallback(eligibleNames)
       }
-
-      const carried = isContinuation(query) ? this._carryForward(context.agent, eligibleNames) : undefined
-      if (carried) {
-        logger.debug(`strategy=<${this.name}> | continuation turn, carrying previous selection forward`)
-        return carried
-      }
-      logger.debug(`strategy=<${this.name}>, onFailure=<${this._onFailure}> | no matches`)
-      return this._fallback(eligibleNames)
     } catch (error) {
       logger.warn(`strategy=<${this.name}>, onFailure=<${this._onFailure}>, error=<${error}> | search failed`)
-      return this._fallback(eligibleNames)
+      selected = this._fallback(eligibleNames)
     }
+    this._previous.set(context.agent, selected)
+    return selected
   }
 
   /**
@@ -255,7 +256,8 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
   /**
    * The loop projects input tokens against the full catalog before input middleware runs, but only
    * on a cold start. Warm calls derive the projection from the previous call's actual usage, which
-   * already excluded hidden specs, so subtracting again would double-count.
+   * already excluded hidden specs, so subtracting again would double-count. The recount uses the
+   * agent's model, as the loop does, rather than the model the call was routed to.
    */
   private async _correctProjection(
     context: InvokeModelContext,
@@ -270,7 +272,7 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     const visibleNames = new Set(visible.map((spec) => spec.name))
     const removed = catalog.filter((spec) => !visibleNames.has(spec.name))
     try {
-      const removedTokens = await context.model.countTokens([], { toolSpecs: removed })
+      const removedTokens = await context.agent.model.countTokens([], { toolSpecs: removed })
       return Math.max(0, context.projectedInputTokens - removedTokens)
     } catch (error) {
       logger.debug(`strategy=<${this.name}>, error=<${error}> | token recount failed, keeping projection`)
@@ -352,7 +354,6 @@ const ACKNOWLEDGEMENTS: ReadonlySet<string> = new Set([
   'yes',
   'yeah',
   'yep',
-  'no',
   'nope',
   'ok',
   'okay',

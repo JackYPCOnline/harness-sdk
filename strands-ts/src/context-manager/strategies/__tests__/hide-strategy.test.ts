@@ -78,9 +78,11 @@ function context(
   toolSpecs: ToolSpec[],
   overrides?: Partial<Pick<InvokeModelContext, 'messages' | 'toolChoice' | 'invocationState' | 'model'>>
 ): InvokeModelContext {
+  const model = overrides?.model ?? countingModel()
+  Object.assign(agent, { model })
   return {
     agent,
-    model: overrides?.model ?? countingModel(),
+    model,
     messages: overrides?.messages ?? [user('search the billing records')],
     toolSpecs,
     invocationState: overrides?.invocationState ?? {},
@@ -225,10 +227,10 @@ describe('Hide.toolSpecs', () => {
 
     it('derives the query from the latest user text, skipping tool-result-only turns', async () => {
       const search = spySearch(['billing_search'])
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { search }))
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2 }))
       const messages = [user('first'), user('  track the shipment  '), toolResultOnly()]
       await handler(context(agent, catalog, { messages }))
-      expect(search.search).toHaveBeenCalledWith('track the shipment', expect.any(Array), 10)
+      expect(search.search).toHaveBeenCalledWith('track the shipment', expect.any(Array), 2)
     })
 
     it('passes only the eligible specs as candidates, with keep as the limit', async () => {
@@ -246,55 +248,13 @@ describe('Hide.toolSpecs', () => {
       expect(names(result.toolSpecs)).toEqual(['billing_search', 'billing_summary', 'shipping_track'])
     })
 
-    it('shows the whole catalog when it fits within keep', async () => {
-      const search = createStaticToolSearch(['shipping_track'])
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 10 }))
+    it('shows the whole catalog without searching when it fits within keep', async () => {
+      const search = spySearch(['shipping_track'])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 5 }))
       const input = context(agent, catalog)
       const result = await handler(input)
       expect(result).toBe(input)
-    })
-  })
-
-  describe('KeywordToolSearch', () => {
-    const weather = [
-      spec('get_weather', 'Current conditions for a city', { city: { description: 'City name' } }),
-      spec('city_guide', 'Weather-independent sightseeing tips'),
-      spec('bookFlight', 'Book a flight to a destination'),
-    ]
-    const rank = async (query: string, limit = 10): Promise<string[]> =>
-      (await KeywordToolSearch.search(query, weather, limit)).map((match) => match.name)
-
-    it('splits snake_case names and weights name hits over description hits', async () => {
-      expect(await rank('weather Paris')).toEqual(['get_weather', 'city_guide'])
-    })
-
-    it('splits camelCase names', async () => {
-      expect(await rank('book a flight')).toEqual(['bookFlight'])
-    })
-
-    it('matches input-property names and descriptions', async () => {
-      expect(await rank('name')).toEqual(['get_weather'])
-    })
-
-    it('ignores stop words and single characters', async () => {
-      expect(await rank('the a to')).toEqual([])
-      expect(await rank('is it in the city')).toEqual(['city_guide', 'get_weather'])
-    })
-
-    it('breaks ties by candidate order', async () => {
-      expect(await rank('tips conditions')).toEqual(['get_weather', 'city_guide'])
-    })
-
-    it('respects the limit', async () => {
-      expect(await rank('city', 1)).toEqual(['city_guide'])
-    })
-
-    it('returns scores with higher meaning more relevant', async () => {
-      const results = await KeywordToolSearch.search('weather', weather, 10)
-      expect(results).toEqual([
-        { name: 'get_weather', score: 3 },
-        { name: 'city_guide', score: 1 },
-      ])
+      expect(search.search).not.toHaveBeenCalled()
     })
   })
 
@@ -390,7 +350,7 @@ describe('Hide.toolSpecs', () => {
 
     it('"none" shows only pinned and protected tools when search throws', async () => {
       const target = ['toolSpec::*', '!toolSpec::ask_user']
-      const { agent, handler } = attach(toolSpecs(target, { search: broken, onFailure: 'none' }))
+      const { agent, handler } = attach(toolSpecs(target, { search: broken, keep: 1, onFailure: 'none' }))
       const withProtected = [...catalog, spec(RETRIEVAL_TOOL_NAME, 'Retrieve offloaded content')]
       const result = await handler(context(agent, withProtected))
       expect(names(result.toolSpecs)).toEqual(['ask_user', RETRIEVAL_TOOL_NAME])
@@ -398,9 +358,20 @@ describe('Hide.toolSpecs', () => {
 
     it('"none" shows only pinned tools when nothing matches and nothing can be carried', async () => {
       const target = ['toolSpec::*', '!toolSpec::ask_user']
-      const { agent, handler } = attach(toolSpecs(target, { search: createStaticToolSearch([]), onFailure: 'none' }))
+      const { agent, handler } = attach(
+        toolSpecs(target, { search: createStaticToolSearch([]), keep: 1, onFailure: 'none' })
+      )
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['ask_user'])
+    })
+
+    it('"none" leaves a catalog that fits within keep untouched', async () => {
+      const search = spySearch([])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 10, onFailure: 'none' }))
+      const input = context(agent, catalog)
+      const result = await handler(input)
+      expect(result).toBe(input)
+      expect(search.search).not.toHaveBeenCalled()
     })
 
     it('"none" still carries a previous selection forward', async () => {
@@ -485,6 +456,28 @@ describe('Hide.toolSpecs', () => {
       await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
       const result = await handler(context(agent, catalog, { invocationState: {}, messages: [user('thanks')] }))
       expect(names(result.toolSpecs)).toEqual(['billing_search'])
+    })
+
+    it('carries what the model last saw, including a fail-open turn', async () => {
+      const search: ToolSearchStrategy = {
+        search: async (query) => (query === 'billing' ? [{ name: 'billing_search', score: 1 }] : []),
+      }
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
+      await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
+      await handler(context(agent, catalog, { invocationState: {}, messages: [user('plane ticket to Paris')] }))
+      const result = await handler(context(agent, catalog, { invocationState: {}, messages: [user('yes go ahead')] }))
+      expect(names(result.toolSpecs)).toEqual(names(catalog))
+    })
+
+    it('carries a passed-through catalog forward as the full view', async () => {
+      const search: ToolSearchStrategy = {
+        search: async (query) => (query === 'billing' ? [{ name: 'billing_search', score: 1 }] : []),
+      }
+      const strategy = toolSpecs('toolSpecs', { search, keep: 1, onFailure: 'none' }).when({ count: 5 })
+      const { agent, handler } = attach(strategy as HideToolSpecsStrategy)
+      await handler(context(agent, catalog.slice(0, 4), { invocationState: {}, messages: [user('billing')] }))
+      const result = await handler(context(agent, catalog, { invocationState: {}, messages: [user('ok thanks')] }))
+      expect(names(result.toolSpecs)).toEqual(names(catalog.slice(0, 4)))
     })
 
     it('does not carry forward when the turn names a new topic', async () => {
@@ -579,6 +572,19 @@ describe('Hide.toolSpecs', () => {
       expect(model.countTokens).not.toHaveBeenCalled()
     })
 
+    it('recounts with the agent model, not the model the call was routed to', async () => {
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
+      const routedModel = countingModel(1000)
+      const input = {
+        ...context(agent, catalog, { model: countingModel(25) }),
+        model: routedModel,
+        projectedInputTokens: 1000,
+      }
+      const result = await handler(input)
+      expect(result.projectedInputTokens).toBe(900)
+      expect(routedModel.countTokens).not.toHaveBeenCalled()
+    })
+
     it('leaves the projection alone when nothing was hidden', async () => {
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search: createStaticToolSearch([]), keep: 1 }))
       const model = countingModel()
@@ -647,5 +653,59 @@ describe('Hide.toolSpecs', () => {
       expect(names(fromFirst.toolSpecs)).toEqual(['billing_search'])
       expect(names(fromSecond.toolSpecs)).toEqual(['shipping_track'])
     })
+  })
+})
+
+describe('KeywordToolSearch', () => {
+  const weather = [
+    spec('get_weather', 'Current conditions for a city', { city: { description: 'City name' } }),
+    spec('city_guide', 'Weather-independent sightseeing tips'),
+    spec('bookFlight', 'Book a flight to a destination'),
+  ]
+  const rank = async (query: string, limit = 10): Promise<string[]> =>
+    (await KeywordToolSearch.search(query, weather, limit)).map((match) => match.name)
+
+  it('splits snake_case names and weights name hits over description hits', async () => {
+    expect(await rank('weather Paris')).toEqual(['get_weather', 'city_guide'])
+  })
+
+  it('splits camelCase names', async () => {
+    expect(await rank('book a flight')).toEqual(['bookFlight'])
+  })
+
+  it('ranks a tool named verbatim in the query first', async () => {
+    expect(await rank('run get_weather for Seattle', 1)).toEqual(['get_weather'])
+    expect(await rank('call bookFlight now', 1)).toEqual(['bookFlight'])
+  })
+
+  it('splits acronym boundaries', async () => {
+    const specs = [spec('parseHTTPBody', 'Parse a request body'), spec('other', 'Unrelated')]
+    const results = await KeywordToolSearch.search('http body', specs, 10)
+    expect(results.map((match) => match.name)).toEqual(['parseHTTPBody'])
+  })
+
+  it('matches input-property names and descriptions', async () => {
+    expect(await rank('name')).toEqual(['get_weather'])
+  })
+
+  it('ignores stop words and single characters', async () => {
+    expect(await rank('the a to')).toEqual([])
+    expect(await rank('is it in the city')).toEqual(['city_guide', 'get_weather'])
+  })
+
+  it('breaks ties by candidate order', async () => {
+    expect(await rank('tips conditions')).toEqual(['get_weather', 'city_guide'])
+  })
+
+  it('respects the limit', async () => {
+    expect(await rank('city', 1)).toEqual(['city_guide'])
+  })
+
+  it('returns scores with higher meaning more relevant', async () => {
+    const results = await KeywordToolSearch.search('weather', weather, 10)
+    expect(results).toEqual([
+      { name: 'get_weather', score: 3 },
+      { name: 'city_guide', score: 1 },
+    ])
   })
 })

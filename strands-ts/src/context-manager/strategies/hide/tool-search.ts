@@ -52,7 +52,7 @@ const NAME_WEIGHT = 3
  */
 export const KeywordToolSearch: ToolSearchStrategy = {
   async search(query: string, candidates: readonly ToolSpec[], limit: number): Promise<ToolSearchResult[]> {
-    const queryTokens = contentTokens(query)
+    const queryTokens = contentTokens(splitIdentifier(query))
     if (queryTokens.size === 0) return []
 
     const scored: ToolSearchResult[] = []
@@ -82,9 +82,15 @@ export function contentTokens(query: string): Set<string> {
   return tokens
 }
 
-/** Breaks an identifier into words: `get_weather`, `get-weather`, `getWeather`, `mcp::get.weather`. */
-function splitIdentifier(identifier: string): string {
-  return identifier.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\-.:/]+/g, ' ')
+/**
+ * Breaks identifiers into words: `get_weather`, `get-weather`, `getWeather`, `parseHTTPBody`,
+ * `mcp::get.weather`. Applied to the query as well, so a tool named verbatim in it matches its name.
+ */
+function splitIdentifier(text: string): string {
+  return text
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[_\-.:/]+/g, ' ')
 }
 
 /** Description plus input-property names and descriptions. */
