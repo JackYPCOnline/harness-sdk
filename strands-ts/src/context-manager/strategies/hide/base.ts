@@ -50,7 +50,7 @@ let nextInstanceId = 1
  *
  * @internal
  */
-export abstract class BaseHideStrategy<TState extends object> implements HideStrategyBuilder {
+export abstract class BaseHideStrategy<TState extends object> implements ContextStrategy {
   abstract readonly name: string
 
   protected readonly _count: number | undefined
@@ -62,8 +62,6 @@ export abstract class BaseHideStrategy<TState extends object> implements HideStr
     }
     this._count = conditions?.count
   }
-
-  abstract when(conditions: HideConditions): ContextStrategy
 
   init(agent: LocalAgent): void {
     agent.addMiddleware(InvokeModelStage.Input, (context) => this._transform(context))
