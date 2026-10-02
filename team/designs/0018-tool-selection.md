@@ -13,7 +13,7 @@
 ## Overview
 
 Tool definitions are context. The system that decides which messages and tool results the model sees should also decide which tool definitions it sees. Tool selection therefore belongs to the `ContextManager`, not to a standalone plugin or a new `Agent` parameter.
-The `ContextManager` manages durable messages through hooks, while tool definitions are a per-call projection of the tool registry. Tool specs become a ContextManager target managed by `Hide("tool_specs", ...)`, which ContextManager delivers through the same model-input seam the SDK already uses for per-call changes. The registry is never touched.
+The `ContextManager` manages durable messages through hooks, while tool definitions are a per-call projection of the tool registry. Tool specs become a ContextManager target managed by `Hide.tool_specs(...)`, which ContextManager delivers through the same model-input seam the SDK already uses for per-call changes. The registry is never touched.
 
 ## Goals and Non-Goals
 
@@ -36,7 +36,7 @@ Non-Goals (v1):
 
 ## Design decisions
 
-**Tool specs are managed at the model-input seam, not in the registry and not in the message pipeline.** Every model call already rebuilds `tool_specs` from the full `ToolRegistry`, copies it into an `InvokeModelContext`, and runs that context through `InvokeModelStage.Input` middleware before the terminal sends it. `ModelRouter`, `BackgroundTasks`, `MemoryManager`, and `ContextInjector` all deliver their policies from that seam, registered from their own `init_agent`. `Hide("tool_specs", ...)` does the same. The `ContextManager`'s message strategies stay on hooks and the stash, while `Hide` filters only the per-call spec projection.
+**Tool specs are managed at the model-input seam, not in the registry and not in the message pipeline.** Every model call already rebuilds `tool_specs` from the full `ToolRegistry`, copies it into an `InvokeModelContext`, and runs that context through `InvokeModelStage.Input` middleware before the terminal sends it. `ModelRouter`, `BackgroundTasks`, `MemoryManager`, and `ContextInjector` all deliver their policies from that seam, registered from their own `init_agent`. `Hide.tool_specs(...)` does the same. The `ContextManager`'s message strategies stay on hooks and the stash, while `Hide` filters only the per-call spec projection.
 
 **The registry is read, never written.** A tool is executable code; its spec becomes context only when supplied to the model. The registry owns the code and how it is loaded, including local tools, MCP tools, and hot reload.
 The `ContextManager` decides which specs appear in a call. "Hiding" a tool means its spec is absent from one call's projection; "reloading" it means a later projection includes it again. Nothing is stored or fetched because the spec comes from code that is still registered. `agent.tools` and `agent.tool_registry` always return the full set, and the executor still resolves a returned tool name against the full registry. Hiding is therefore a visibility control, not authorization.
@@ -63,9 +63,9 @@ No breaking change. Existing strategies and facades are unchanged, and `agent.to
 
 ### What happens on a model call
 
-The strategy treats the incoming `context.tool_specs` as the catalog for the call. A call with an explicit `tool_choice` or forced structured output passes through unchanged. If `.when(count=...)` does not match, the catalog also passes through unchanged.
+The strategy treats the incoming `context.tool_specs` as the catalog for the call. Specs named in `always_hide` are removed first. Tools that SDK-injected content tells the model to call, the structured-output tool and the stash and offloader retrieval tools, are never hidden. Pinned specs such as `!tool_spec::ask_user` are never candidates and stay visible outside `keep`. If `.when(count=...)` does not match, or the candidates already fit within `keep`, the catalog passes through unchanged.
 
-When the condition matches, the first call of an invocation derives a query from the latest user text, renders each matching tool into a candidate (name, description, input-property descriptions), asks `ToolSearchStrategy` for a best-first ranking, and keeps the top `keep` results. Target exclusions such as `!tool_spec::ask_user` remain visible without consuming `keep`. The selected names are stored in `invocation_state` under a private key and cleared on `AfterInvocationEvent`. Later calls in the same invocation reuse the names, intersected with that call's catalog. Emitted specs keep catalog order, so a stable selection is a byte-identical tool prefix from call to call. A search error, empty result, or result with no valid IDs fails open to the incoming catalog with one warning, and the structured-output tool is always retained on an unforced call.
+Otherwise the first call of an invocation derives a query from the latest user text, asks `ToolSearchStrategy` to rank the candidate specs, and keeps the best `keep` of them, filling from unmatched candidates in catalog order, so the model sees `min(keep, candidates)` plus pinned and protected tools. The decision is held per invocation and cleared at its boundaries; later calls in the same invocation reuse it, intersected with that call's catalog, and specs that join the catalog mid-invocation were never ranked and stay visible. A forced call (`tool_choice` names a tool) applies the same decision with the forced tool kept on top. Emitted specs keep catalog order, so a stable selection is a byte-identical tool prefix from call to call, including the forced structured-output call that ends an invocation. A continuation turn with no matches ("yes, do it") carries forward what the model last saw. A turn that names something new and matches nothing, or a search error, shows every candidate or only pinned and protected tools according to `on_failure`.
 
 ```mermaid
 sequenceDiagram
@@ -77,12 +77,12 @@ sequenceDiagram
     participant M as Model
 
     EL->>CM: InvokeModelContext (full tool_specs)
-    alt bypass or condition does not match
+    alt condition does not match or candidates fit within keep
         CM->>T: tool_specs unchanged
     else first call of the invocation
         CM->>H: apply(tool_specs)
         H->>S: search(query, candidates, keep)
-        S-->>H: ranked IDs (or failure → fail open)
+        S-->>H: ranked names (or failure → on_failure)
         H-->>CM: selected names
         CM->>T: selected specs in catalog order
     else selection exists
@@ -99,7 +99,7 @@ Handler ordering. Current: `Hide`'s handler runs after routing and tool-spec pro
 
 ### Search strategies
 
-`ToolSearchStrategy` ranks in-memory candidates that are never stored. It is a separate contract from the storage package's `SearchStrategy`, which ranks stored keys for a `Storage`; `StorageSearch` bridges the two. Three implementations: `LexicalSearch` is the default, in-process token overlap between the query and each candidate, tool-name terms weighted up, ties broken by catalog order. `LLMSearch` is the opt-in judge, one call to a developer-supplied model that picks relevant names from the candidate list, with the output allowlisted to candidate IDs and any failure failing open. `StorageSearch(storage)` indexes candidate text and delegates to `Storage.search`, which is how embeddings and S3 Vectors (#3967) plug in.
+`ToolSearchStrategy` ranks in-memory candidates that are never stored. It is a separate contract from the storage package's `SearchStrategy`, which ranks stored keys for a `Storage`; `StorageSearch` bridges the two. Three implementations: `KeywordToolSearch` is the default, in-process overlap between the query's content words and each candidate's name, description, and input-property text; names are split on `_ - . : /` and camelCase, plurals are normalized, any name hit ranks above any number of description hits, and ties keep catalog order. `LLMSearch` is the opt-in judge, one call to a developer-supplied model that picks relevant names from the candidate list, with the output allowlisted to candidate IDs and any failure failing open. `StorageSearch(storage)` indexes candidate text and delegates to `Storage.search`, which is how embeddings and S3 Vectors (#3967) plug in.
 
 ### Developer experience
 
@@ -107,23 +107,28 @@ The explicit strategy shows the behavior:
 
 ```python
 context_manager = ContextManager(
-    strategies=[Hide("tool_specs", keep=10).when(count=20)],
+    strategies=[Hide.tool_specs(keep=10).when(count=20)],
 )
 agent = Agent(tools=[...many tools...], context_manager=context_manager)
 ```
 
-Tool-specific exclusions keep a base set visible:
+Pins keep a base set visible outside `keep`; naming candidates narrows what competes for it:
 
 ```python
 context_manager = ContextManager(
     strategies=[
-        Hide(
-            ["tool_spec::*", "!tool_spec::ask_user", "!tool_spec::finish"],
-            search=LexicalSearch(),
-            keep=15,
-        ).when(count=20),
+        Hide.tool_specs(["tool_spec::*", "!tool_spec::ask_user", "!tool_spec::finish"], keep=15).when(count=20),
     ],
 )
+
+# Only the billing tools compete for `keep`; everything else stays visible
+Hide.tool_specs(["tool_spec::billing_search", "tool_spec::billing_summary"], keep=1)
+```
+
+Tools the model must never see, and what to show when nothing matches:
+
+```python
+Hide.tool_specs(always_hide=["debug_dump"], on_failure="none")
 ```
 
 After benchmarks establish the default activation rule, a preset expands to the same strategy:
@@ -138,12 +143,12 @@ A judge changes only the search implementation:
 judge = BedrockModel(model_id="amazon.nova-micro-v1:0")
 context_manager = ContextManager(
     strategies=[
-        Hide("tool_specs", search=LLMSearch(model=judge), keep=15).when(count=20),
+        Hide.tool_specs(search=LLMSearch(model=judge), keep=15).when(count=20),
     ],
 )
 ```
 
-TypeScript recases the target and preset to `toolSpecs`, `toolSpec::ask_user`, and `toolSelection`. Each decision records strategy, candidate count, selected names, duration, and fail-open on the agent-loop-cycle span; an `LLMSearch` call gets its own child span with usage.
+TypeScript recases these to `Hide.toolSpecs`, `toolSpec::ask_user`, `alwaysHide`, `onFailure`, and `toolSelection`. Each decision records strategy, candidate count, selected names, duration, and the `on_failure` outcome on the agent-loop-cycle span; an `LLMSearch` call gets its own child span with usage.
 
 ### Interface
 
@@ -151,35 +156,31 @@ The proposed interface is:
 
 ```python
 @dataclass(frozen=True)
-class SearchCandidate:
-    id: str       # tool name for this feature
-    text: str     # searchable name, description, and input-property descriptions
-
-@dataclass(frozen=True)
-class SearchMatch:
-    id: str
-    score: float | None = None   # informational; the contract is result ORDER, best-first
+class ToolSearchResult:
+    name: str
+    score: float   # higher is more relevant; the contract is result ORDER, best-first
 
 class ToolSearchStrategy(Protocol):
-    name: str
-
     async def search(
-        self, query: str, candidates: Sequence[SearchCandidate], *, limit: int
-    ) -> Sequence[SearchMatch]: ...
+        self, query: str, candidates: Sequence[ToolSpec], limit: int
+    ) -> Sequence[ToolSearchResult]: ...
 
-class Hide(ContextStrategy):
-    def __init__(
-        self,
-        target: str | Sequence[str],                # "tool_specs", or ["tool_spec::*", "!tool_spec::name"]
+class Hide:
+    @staticmethod
+    def tool_specs(
+        target: str | Sequence[str] = "tool_specs",   # or ["tool_spec::*", "tool_spec::name", "!tool_spec::name"]
         *,
-        search: ToolSearchStrategy | None = None,
+        search: ToolSearchStrategy | None = None,     # KeywordToolSearch when omitted
         keep: int = 10,
-    ) -> None: ...
+        always_hide: Sequence[str] = (),
+        on_failure: Literal["all", "none"] = "all",
+    ) -> HideStrategyBuilder: ...
 
-    def when(self, *, count: int | None = None) -> "Hide": ...
+class HideStrategyBuilder(ContextStrategy):
+    def when(self, *, count: int | None = None) -> ContextStrategy: ...
 ```
 
-`Hide` reuses the existing target parser with a `tool_spec::` namespace, matching `tool::` for tool results. `count` is the number of eligible specs after exclusions and is `Hide`'s only condition; `threshold`, `utilization`, and `preserve_recent` are message conditions and do not apply. When two `Hide` strategies are listed, the second sees the first's output. A tool-spec `Hide` strategy keeps the first matches returned by `ToolSearchStrategy`; scores are informational. The `tool_selection` preset joins the existing `StrategyPresetName` union after benchmarks establish its default `Hide` configuration.
+The target uses a `tool_spec::` namespace, matching `tool::` for tool results: `tool_spec::*` or `tool_spec::<name>` entries name the candidates, and `!tool_spec::<name>` pins a spec outside the operation. `count` is the number of candidates after pins and protected tools and is `Hide`'s only condition; `threshold`, `utilization`, and `preserve_recent` are message conditions and do not apply. When two `Hide` strategies are listed, the second sees the first's output. `keep` is the number of candidates the model sees: the first matches returned by `ToolSearchStrategy` that name a candidate, then unmatched candidates in catalog order; scores are informational. The `tool_selection` preset joins the existing `StrategyPresetName` union after benchmarks establish its default `Hide` configuration.
 
 ## Prompt caching
 
@@ -206,7 +207,8 @@ A Bedrock prototype ([script and full results](https://github.com/JackYPCOnline/
 
 TypeScript proves the extension first because its first-class `ContextManager` and stash already exist. Python ports the stabilized surface rather than shipping a temporary plugin.
 
-- **P0, TypeScript target and local search.** Add the `toolSpecs` target and `Hide` strategy; register the Input handler and `AfterInvocationEvent` cleanup; store selection state in `invocationState`; correct `projectedInputTokens`; add `ToolSearchStrategy`, `LexicalSearch`, a fixed-list `StaticSearch` for tests, validation, bypasses, fail-open, and observability. No registry API changes.
+- **P0, TypeScript target and local search.** Add the `toolSpecs` target and `Hide.toolSpecs`; register the Input handler and invocation-boundary cleanup from `init`; decide once per invocation; correct `projectedInputTokens` on the cold-start call; add `ToolSearchStrategy` with `KeywordToolSearch` as the default, target validation, `alwaysHide`, `onFailure`, and carry-forward on continuation turns. No registry API changes.
+- **P1, span attributes.** Record strategy, candidate count, selected names, duration, and fallback on the agent-loop-cycle span.
 - **P0, benchmarks.** Extend the prototype to real MCP and local catalogs and ambiguous tasks; tune `keep` and query projection; derive a cache-aware activation policy from raw tokens, cache reads and writes, latency, realized cost, and task success. Compare automatic selection against progressive disclosure (names plus short previews and a `search_tools` tool) on the same tasks.
 - **P1, preset.** After benchmarks choose the default activation rule, add the `toolSelection` preset from #4053 as sugar over the default `Hide` strategy.
 - **P1, Python parity.** Port the first-class `ContextManager`, `tool_specs` target, and `Hide` with the same behavior; add the `tool_selection` preset after its default is established.
@@ -224,7 +226,7 @@ This design supersedes the `ToolManager` proposal in #263; the registry remains 
 
 **Use `Offload` for tool specs.** `Offload` can share the `tool_specs` target, but its stash and overflow semantics do not apply because the registry still holds each spec. `Hide` keeps tool selection in the strategy list without storing specs or applying message transformations.
 
-**Use a dedicated `tool_selection` parameter or standalone plugin.** Either can use the same middleware and registry boundary, but creates a second configuration path. `Hide("tool_specs", ...)` keeps context policies in one strategy list and supports the preset model.
+**Use a dedicated `tool_selection` parameter or standalone plugin.** Either can use the same middleware and registry boundary, but creates a second configuration path. `Hide.tool_specs(...)` keeps context policies in one strategy list and supports the preset model.
 
 **Register and unregister tools around each call.** No new seam, and every registry consumer sees the reduced set. It turns the registry into per-call state shared across concurrent invocations, `agent.tools` stops reflecting what the developer registered, a tool use for a tool hidden on this call resolves against a registry that no longer contains it, MCP consumer counts and hot reload are disturbed, and the wire request changes exactly as it does with the portable filter, so nothing is saved on cache. The defensive per-call copy exists so a projection can differ from the inventory.
 
