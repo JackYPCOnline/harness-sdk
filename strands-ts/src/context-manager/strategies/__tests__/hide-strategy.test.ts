@@ -385,31 +385,48 @@ describe('Hide.toolSpecs', () => {
     })
   })
 
-  describe('bypass', () => {
-    it('passes the catalog through when toolChoice is set', async () => {
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1 }))
-      const input = context(agent, catalog, { toolChoice: { any: {} } })
-      const result = await handler(input)
-      expect(result).toBe(input)
+  describe('forced calls', () => {
+    it('applies the stored selection so the prefix matches the previous call', async () => {
+      const search = spySearch(['billing_search'])
+      const withStructured = [...catalog, spec(STRUCTURED_OUTPUT_TOOL_NAME, 'Return structured output')]
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
+      const invocationState: InvocationState = {}
+      const first = await handler(context(agent, withStructured, { invocationState }))
+      const forced = await handler(
+        context(agent, withStructured, {
+          invocationState,
+          messages: [toolResultOnly()],
+          toolChoice: { tool: { name: STRUCTURED_OUTPUT_TOOL_NAME } },
+        })
+      )
+      expect(names(forced.toolSpecs)).toEqual(names(first.toolSpecs))
+      expect(names(forced.toolSpecs)).toEqual(['billing_search', STRUCTURED_OUTPUT_TOOL_NAME])
+      expect(search.search).toHaveBeenCalledTimes(1)
     })
 
-    it('still applies alwaysHide when toolChoice is set', async () => {
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1, alwaysHide: ['ask_user'] }))
+    it('keeps the forced tool visible when the selection did not pick it', async () => {
+      const search = createStaticToolSearch(['billing_search'])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
+      const result = await handler(context(agent, catalog, { toolChoice: { tool: { name: 'shipping_track' } } }))
+      expect(names(result.toolSpecs)).toEqual(['billing_search', 'shipping_track'])
+    })
+
+    it('decides on a forced first call like any other', async () => {
+      const search = spySearch(['billing_search'])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       const result = await handler(context(agent, catalog, { toolChoice: { any: {} } }))
-      expect(names(result.toolSpecs)).toEqual([
-        'billing_search',
-        'billing_summary',
-        'shipping_search',
-        'shipping_track',
-      ])
+      expect(names(result.toolSpecs)).toEqual(['billing_search'])
+      expect(search.search).toHaveBeenCalledTimes(1)
     })
 
     it('keeps a forced tool visible even when it is in alwaysHide', async () => {
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1, alwaysHide: ['ask_user', 'shipping_track'] }))
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { alwaysHide: ['ask_user', 'shipping_track'] }))
       const result = await handler(context(agent, catalog, { toolChoice: { tool: { name: 'ask_user' } } }))
       expect(names(result.toolSpecs)).toEqual(['billing_search', 'billing_summary', 'shipping_search', 'ask_user'])
     })
+  })
 
+  describe('bypass', () => {
     it('passes the catalog through when count is not met', async () => {
       const { agent, handler } = attach(
         toolSpecs('toolSpecs', { keep: 1 }).when({ count: 20 }) as HideToolSpecsStrategy
@@ -714,11 +731,11 @@ describe('KeywordToolSearch', () => {
       spec('github_search', 'Search GitHub repositories'),
       spec('youtube_search', 'Search YouTube videos'),
     ]
-    expect(await KeywordToolSearch.search('look up the order in DynamoDB', specs, 10)).toEqual([
-      { name: 'order_status', score: 5 },
-      { name: 'dynamodb_query', score: 4 },
-    ])
-    expect(await KeywordToolSearch.search('search GitHub', specs, 1)).toEqual([{ name: 'github_search', score: 8 }])
+    const first = async (query: string): Promise<string[]> =>
+      (await KeywordToolSearch.search(query, specs, 1)).map((match) => match.name)
+    expect(await first('look up the order in DynamoDB')).toEqual(['order_status'])
+    expect(await first('query the DynamoDB table')).toEqual(['dynamodb_query'])
+    expect(await first('search GitHub')).toEqual(['github_search'])
   })
 
   it('splits acronym boundaries', async () => {
@@ -744,11 +761,35 @@ describe('KeywordToolSearch', () => {
     expect(await rank('city', 1)).toEqual(['city_guide'])
   })
 
+  it('ranks any name hit above any number of description hits', async () => {
+    const specs = [
+      spec('crm_note', 'Send a weather note by email about the email weather'),
+      spec('send_email', 'Deliver a message'),
+    ]
+    const results = await KeywordToolSearch.search('send weather email', specs, 10)
+    expect(results.map((match) => match.name)).toEqual(['send_email', 'crm_note'])
+  })
+
+  it('normalizes plurals on both sides', async () => {
+    const specs = [
+      spec('refund_invoice', 'Refund an invoice'),
+      spec('create_booking', 'Create a booking'),
+      spec('search_flights', 'Search flights by route'),
+      spec('run_query', 'Run a query'),
+    ]
+    const first = async (query: string): Promise<string | undefined> =>
+      (await KeywordToolSearch.search(query, specs, 1))[0]?.name
+    expect(await first('refunds for customer 42')).toBe('refund_invoice')
+    expect(await first('show my bookings')).toBe('create_booking')
+    expect(await first('book a flight')).toBe('search_flights')
+    expect(await first('my saved queries')).toBe('run_query')
+  })
+
   it('returns scores with higher meaning more relevant', async () => {
     const results = await KeywordToolSearch.search('weather', weather, 10)
     expect(results).toEqual([
-      { name: 'get_weather', score: 3 },
-      { name: 'city_guide', score: 1 },
+      { name: 'get_weather', score: 1 },
+      { name: 'city_guide', score: 0.5 },
     ])
   })
 })

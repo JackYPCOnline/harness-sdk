@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
+import { z } from 'zod'
 import { Agent } from '../../agent/agent.js'
 import { ContextManager } from '../context-manager.js'
 import { RETRIEVAL_TOOL_NAME } from '../retrieval-tool.js'
+import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../tools/structured-output-tool.js'
 import { Hide } from '../strategies/hide/index.js'
 import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 import { createMockTool } from '../../__fixtures__/tool-helpers.js'
@@ -83,6 +85,30 @@ describe('Hide through ContextManager', () => {
     await agent.invoke('thanks')
 
     expect(model.seenToolSpecs).toEqual([['beta'], ['beta']])
+  })
+
+  it('ships the same prefix on the forced structured-output call', async () => {
+    const model = new RecordingModel()
+      .addTurn(new TextBlock('plain response'))
+      .addTurn(new ToolUseBlock({ name: STRUCTURED_OUTPUT_TOOL_NAME, toolUseId: 'so-1', input: { name: 'Alice' } }))
+    const tools = ['alpha', 'beta', 'gamma'].map((name) => createMockTool(name, () => 'ok'))
+    const agent = new Agent({
+      model,
+      tools,
+      printer: false,
+      structuredOutputSchema: z.object({ name: z.string() }),
+      contextManager: new ContextManager({
+        strategies: [Hide.toolSpecs('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 })],
+        stash: false,
+      }),
+    })
+
+    await agent.invoke('hello')
+
+    expect(model.seenToolSpecs).toEqual([
+      ['beta', STRUCTURED_OUTPUT_TOOL_NAME],
+      ['beta', STRUCTURED_OUTPUT_TOOL_NAME],
+    ])
   })
 
   it('keeps the retrieval tool visible alongside an offload preset', async () => {

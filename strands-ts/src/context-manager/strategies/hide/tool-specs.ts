@@ -14,7 +14,7 @@ import { TextBlock } from '../../../types/messages.js'
 import { OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
 import { BaseHideStrategy } from './base.js'
-import { KeywordToolSearch, contentTokens } from './tool-search.js'
+import { KeywordToolSearch, contentTerms } from './tool-search.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
 import type { ToolSpec } from '../../../tools/types.js'
 import type { LocalAgent } from '../../../types/agent.js'
@@ -56,7 +56,8 @@ export interface HideToolSpecsConfig {
   /**
    * How many candidates the model sees: the best matches first, then unmatched candidates in
    * catalog order until the budget is met. A catalog that fits within the budget passes through.
-   * Pinned and protected tools are shown in addition. Defaults to 10.
+   * Pinned and protected tools are shown in addition, so the wire carries
+   * `min(keep, candidates) + pinned + protected` specs on a ranked turn. Defaults to 10.
    */
   keep?: number
   /**
@@ -64,7 +65,10 @@ export interface HideToolSpecsConfig {
    * SDK-injected content tells the model to call are never hidden, even if listed here.
    */
   alwaysHide?: readonly string[]
-  /** What to show when no selection can be made. Defaults to `"all"`. */
+  /**
+   * What to show when no selection can be made. `keep` bounds ranked turns; this governs turns
+   * with no ranking signal at all, where `"all"` shows every candidate. Defaults to `"all"`.
+   */
   onFailure?: HideFailurePolicy
 }
 
@@ -84,8 +88,8 @@ const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
 ])
 
 /**
- * The decision for one invocation, made on its first unforced model call and reused on every
- * later one. Specs that join the catalog later in the invocation were never ranked and stay visible.
+ * The decision for one invocation, made on its first model call and reused on every later one.
+ * Specs that join the catalog later in the invocation were never ranked and stay visible.
  */
 interface ToolSpecsState {
   /** Names to show among the candidates; undefined when the catalog passes through. */
@@ -139,6 +143,11 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     return new HideToolSpecsStrategy(this._target, this._config, conditions)
   }
 
+  /**
+   * A forced call (`toolChoice` names a tool) keeps that tool visible whatever the selection, so
+   * the forced structured-output call at the end of an invocation ships the same prefix as the
+   * calls before it rather than re-expanding to the full catalog.
+   */
   protected async _transform(context: InvokeModelContext): Promise<InvokeModelContext> {
     const catalog = context.toolSpecs
     const forced =
@@ -146,14 +155,13 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     const shown = catalog.filter(
       (spec) => PROTECTED_TOOLS.has(spec.name) || spec.name === forced || !this._alwaysHide.has(spec.name)
     )
-    if (context.toolChoice !== undefined) return this._emit(context, catalog, shown)
 
     const state = this._getState(context.invocationState) ?? (await this._decide(context, shown))
     if (state.selected === undefined) return this._emit(context, catalog, shown)
 
     const { selected, considered } = state
     const visible = shown.filter(
-      (spec) => !this._isEligible(spec) || !considered.has(spec.name) || selected.has(spec.name)
+      (spec) => spec.name === forced || !this._isEligible(spec) || !considered.has(spec.name) || selected.has(spec.name)
     )
     return this._emit(context, catalog, visible)
   }
@@ -350,8 +358,8 @@ function hasUsageBaseline(messages: readonly Message[]): boolean {
  * since showing every tool costs tokens while carrying stale tools costs correctness.
  */
 function isContinuation(query: string): boolean {
-  for (const token of contentTokens(query)) {
-    if (!ACKNOWLEDGEMENTS.has(token)) return false
+  for (const term of contentTerms(query)) {
+    if (!ACKNOWLEDGEMENTS.has(term)) return false
   }
   return true
 }

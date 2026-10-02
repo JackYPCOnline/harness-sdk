@@ -8,7 +8,7 @@
  * @internal
  */
 
-import { STOP_WORDS, tokenOverlapScore, tokenize } from '../../../storage/search/keyword.js'
+import { STOP_WORDS, tokenize } from '../../../storage/search/keyword.js'
 import type { ToolSpec } from '../../../tools/types.js'
 
 /**
@@ -41,26 +41,29 @@ export interface ToolSearchStrategy {
   search(query: string, candidates: readonly ToolSpec[], limit: number): Promise<ToolSearchResult[]>
 }
 
-const NAME_WEIGHT = 3
-
 /**
- * Keyword tool search: distinct content words of the query that appear in a spec, with name hits
- * weighted over description and input-property hits. Names are split on `_ - . : /` and camelCase
- * so `get_weather` matches "weather". Ties keep candidate order. No external dependencies.
+ * Keyword tool search over the query's content terms. A term that appears in the tool name counts
+ * as one point; a term that appears only in the description or input properties counts as a
+ * fraction of a point, so a name hit always ranks above any number of description hits and
+ * description hits break ties among equal name hits. Remaining ties keep candidate order.
+ *
+ * Names are split on `_ - . : /` and camelCase so `get_weather` matches "weather"; plurals are
+ * normalized so "refunds" matches `refund_invoice`. No external dependencies.
  *
  * @internal
  */
 export const KeywordToolSearch: ToolSearchStrategy = {
   async search(query: string, candidates: readonly ToolSpec[], limit: number): Promise<ToolSearchResult[]> {
-    // Raw tokens meet descriptions, which are not split ("DynamoDB"); split tokens meet names.
-    const queryTokens = contentTokens(`${query} ${splitIdentifier(query)}`)
-    if (queryTokens.size === 0) return []
+    // Raw terms meet descriptions, which are not split ("DynamoDB"); split terms meet names.
+    const queryTerms = contentTerms(`${query} ${splitIdentifier(query)}`)
+    if (queryTerms.size === 0) return []
+    const bodyWeight = 1 / (queryTerms.size + 1)
 
     const scored: ToolSearchResult[] = []
     for (const spec of candidates) {
-      const nameScore = tokenOverlapScore(queryTokens, splitIdentifier(spec.name))
-      const bodyScore = tokenOverlapScore(queryTokens, bodyText(spec))
-      const score = nameScore * NAME_WEIGHT + bodyScore
+      const nameHits = overlap(queryTerms, splitIdentifier(spec.name))
+      const bodyHits = overlap(queryTerms, bodyText(spec))
+      const score = nameHits + bodyHits * bodyWeight
       if (score > 0) scored.push({ name: spec.name, score })
     }
     scored.sort((left, right) => right.score - left.score)
@@ -69,18 +72,41 @@ export const KeywordToolSearch: ToolSearchStrategy = {
 }
 
 /**
- * The query's content words: tokens that are not stop words or single characters.
+ * The content terms of a text: lowercased tokens that are not stop words or single characters,
+ * with plurals normalized.
  *
- * @param query - Raw query text
- * @returns Lowercased content tokens
+ * @param text - Raw text
+ * @returns Content terms
  * @internal
  */
-export function contentTokens(query: string): Set<string> {
-  const tokens = new Set<string>()
-  for (const token of tokenize(query)) {
-    if (token.length > 1 && !STOP_WORDS.has(token)) tokens.add(token)
+export function contentTerms(text: string): Set<string> {
+  const terms = new Set<string>()
+  for (const token of tokenize(text)) {
+    if (token.length > 1 && !STOP_WORDS.has(token)) terms.add(singular(token))
   }
-  return tokens
+  return terms
+}
+
+/** Count of `text`'s distinct content terms that appear in `queryTerms`. */
+function overlap(queryTerms: ReadonlySet<string>, text: string): number {
+  let hits = 0
+  for (const term of contentTerms(text)) {
+    if (queryTerms.has(term)) hits++
+  }
+  return hits
+}
+
+/**
+ * Plural normalization: `refunds` → `refund`, `invoices` → `invoice`, `searches` → `search`,
+ * `queries` → `query`. Only the plural suffix is touched; `-ing`/`-ed` are left alone because
+ * stripping them without restoring a dropped `e` (`pricing` vs `price`) creates more misses than
+ * it fixes. Full stemming belongs to a richer search strategy.
+ */
+function singular(token: string): string {
+  if (token.length <= 3 || !token.endsWith('s') || token.endsWith('ss')) return token
+  if (token.endsWith('ies')) return `${token.slice(0, -3)}y`
+  if (/(?:ch|sh|x|z)es$/.test(token)) return token.slice(0, -2)
+  return token.slice(0, -1)
 }
 
 /**
