@@ -197,8 +197,10 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
 
   /**
    * Select the names to show for this invocation and record them as what the agent's model last
-   * saw. With no matches, a continuation turn (no content words, such as "yes, do it") carries that
-   * previous view forward; a turn that names something new, or a search failure, goes to `onFailure`.
+   * saw. A continuation turn ("yes, do it", "ok confirm") carries the previous view forward without
+   * ranking, so an acknowledgement that happens to share a word with a tool name cannot swap out
+   * the tool the model is mid-task with. Anything else is ranked; no matches, or a search failure,
+   * goes to `onFailure`.
    */
   private async _select(context: InvokeModelContext, eligible: readonly ToolSpec[]): Promise<ReadonlySet<string>> {
     const eligibleNames = new Set(eligible.map((spec) => spec.name))
@@ -206,12 +208,16 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
 
     let selected: ReadonlySet<string>
     try {
-      selected = await this._rank(eligible, query)
-      if (selected.size === 0) {
-        const carried = isContinuation(query) ? this._carryForward(context.agent, eligibleNames) : undefined
-        if (carried) logger.debug(`strategy=<${this.name}> | continuation turn, carrying previous view forward`)
-        else logger.debug(`strategy=<${this.name}>, onFailure=<${this._onFailure}> | no matches`)
-        selected = carried ?? this._fallback(eligibleNames)
+      const carried = isContinuation(query) ? this._carryForward(context.agent, eligibleNames) : undefined
+      if (carried) {
+        logger.debug(`strategy=<${this.name}> | continuation turn, carrying previous view forward`)
+        selected = carried
+      } else {
+        selected = await this._rank(eligible, query)
+        if (selected.size === 0) {
+          logger.debug(`strategy=<${this.name}>, onFailure=<${this._onFailure}> | no matches`)
+          selected = this._fallback(eligibleNames)
+        }
       }
     } catch (error) {
       logger.warn(`strategy=<${this.name}>, onFailure=<${this._onFailure}>, error=<${error}> | search failed`)

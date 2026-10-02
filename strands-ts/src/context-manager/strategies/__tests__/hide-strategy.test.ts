@@ -447,6 +447,35 @@ describe('Hide.toolSpecs', () => {
     })
   })
 
+  describe('continuation turns', () => {
+    it('carries the previous view forward without ranking', async () => {
+      const search = vi.fn(async (query: string) => [
+        { name: query.includes('flight') ? 'book_flight' : 'confirm_payment', score: 1 },
+      ])
+      const travel = [spec('book_flight', 'Book a flight'), spec('confirm_payment', 'Confirm a payment')]
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search: { search }, keep: 1 }))
+      await handler(context(agent, travel, { invocationState: {}, messages: [user('book the flight')] }))
+      const result = await handler(context(agent, travel, { invocationState: {}, messages: [user('yes, confirm')] }))
+      expect(names(result.toolSpecs)).toEqual(['book_flight'])
+      expect(search).toHaveBeenCalledTimes(1)
+    })
+
+    it('ranks an acknowledgement word when it comes with content words', async () => {
+      const search = spySearch(['confirm_payment'])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
+      await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
+      await handler(context(agent, catalog, { invocationState: {}, messages: [user('confirm the payment')] }))
+      expect(search.search).toHaveBeenCalledTimes(2)
+    })
+
+    it('ranks an acknowledgement-only first turn when there is nothing to carry', async () => {
+      const search = spySearch([])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
+      await handler(context(agent, catalog, { invocationState: {}, messages: [user('ok go')] }))
+      expect(search.search).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe('no matches', () => {
     it('carries the previous invocation selection forward', async () => {
       const search: ToolSearchStrategy = {
@@ -676,6 +705,20 @@ describe('KeywordToolSearch', () => {
   it('ranks a tool named verbatim in the query first', async () => {
     expect(await rank('run get_weather for Seattle', 1)).toEqual(['get_weather'])
     expect(await rank('call bookFlight now', 1)).toEqual(['bookFlight'])
+  })
+
+  it('matches CamelCase words in the query against whole descriptions', async () => {
+    const specs = [
+      spec('order_status', 'Look up the status of an order'),
+      spec('dynamodb_query', 'Run a query against a DynamoDB table'),
+      spec('github_search', 'Search GitHub repositories'),
+      spec('youtube_search', 'Search YouTube videos'),
+    ]
+    expect(await KeywordToolSearch.search('look up the order in DynamoDB', specs, 10)).toEqual([
+      { name: 'order_status', score: 5 },
+      { name: 'dynamodb_query', score: 4 },
+    ])
+    expect(await KeywordToolSearch.search('search GitHub', specs, 1)).toEqual([{ name: 'github_search', score: 8 }])
   })
 
   it('splits acronym boundaries', async () => {

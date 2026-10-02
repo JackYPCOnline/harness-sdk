@@ -52,7 +52,8 @@ const NAME_WEIGHT = 3
  */
 export const KeywordToolSearch: ToolSearchStrategy = {
   async search(query: string, candidates: readonly ToolSpec[], limit: number): Promise<ToolSearchResult[]> {
-    const queryTokens = contentTokens(splitIdentifier(query))
+    // Raw tokens meet descriptions, which are not split ("DynamoDB"); split tokens meet names.
+    const queryTokens = contentTokens(`${query} ${splitIdentifier(query)}`)
     if (queryTokens.size === 0) return []
 
     const scored: ToolSearchResult[] = []
@@ -84,7 +85,8 @@ export function contentTokens(query: string): Set<string> {
 
 /**
  * Breaks identifiers into words: `get_weather`, `get-weather`, `getWeather`, `parseHTTPBody`,
- * `mcp::get.weather`. Applied to the query as well, so a tool named verbatim in it matches its name.
+ * `mcp::get.weather`. Descriptions are left whole, since splitting prose turns "GitHub" into
+ * "git hub" and a lowercase "github" in the query would then miss it.
  */
 function splitIdentifier(text: string): string {
   return text
