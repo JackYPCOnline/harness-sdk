@@ -785,6 +785,19 @@ describe('KeywordToolSearch', () => {
     expect(await first('my saved queries')).toBe('run_query')
   })
 
+  it('normalizes plurals of sibilant stems in both directions', async () => {
+    const specs = [
+      spec('list_processes', 'Lists running processes on the host'),
+      spec('validate_address', 'Validate a postal address'),
+      spec('list_classes', 'List the classes in a module'),
+    ]
+    const first = async (query: string): Promise<string | undefined> =>
+      (await KeywordToolSearch.search(query, specs, 1))[0]?.name
+    expect(await first('kill a process')).toBe('list_processes')
+    expect(await first('check the addresses')).toBe('validate_address')
+    expect(await first('show the class')).toBe('list_classes')
+  })
+
   it('returns scores with higher meaning more relevant', async () => {
     const results = await KeywordToolSearch.search('weather', weather, 10)
     expect(results).toEqual([

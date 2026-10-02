@@ -98,14 +98,14 @@ function overlap(queryTerms: ReadonlySet<string>, text: string): number {
 
 /**
  * Plural normalization: `refunds` → `refund`, `invoices` → `invoice`, `searches` → `search`,
- * `queries` → `query`. Only the plural suffix is touched; `-ing`/`-ed` are left alone because
+ * `processes` → `process`, `queries` → `query`. Only the plural suffix is touched; `-ing`/`-ed` are left alone because
  * stripping them without restoring a dropped `e` (`pricing` vs `price`) creates more misses than
  * it fixes. Full stemming belongs to a richer search strategy.
  */
 function singular(token: string): string {
   if (token.length <= 3 || !token.endsWith('s') || token.endsWith('ss')) return token
   if (token.endsWith('ies')) return `${token.slice(0, -3)}y`
-  if (/(?:ch|sh|x|z)es$/.test(token)) return token.slice(0, -2)
+  if (/(?:ch|sh|ss|x|z)es$/.test(token)) return token.slice(0, -2)
   return token.slice(0, -1)
 }
 
