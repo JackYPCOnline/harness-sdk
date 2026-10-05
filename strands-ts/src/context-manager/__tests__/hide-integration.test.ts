@@ -8,7 +8,6 @@ import { Hide } from '../strategies/hide/index.js'
 import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 import { createMockTool } from '../../__fixtures__/tool-helpers.js'
 import { tool } from '../../tools/tool-factory.js'
-import { createStaticToolSearch } from '../../__fixtures__/search-helpers.js'
 import { TextBlock, ToolResultBlock, ToolUseBlock } from '../../types/messages.js'
 import type { ToolSearchStrategy } from '../strategies/hide/index.js'
 import type { Tool } from '../../tools/tool.js'
@@ -24,6 +23,11 @@ class RecordingModel extends MockMessageModel {
     this.seenToolSpecs.push((options?.toolSpecs ?? []).map((spec) => spec.name))
     yield* super.stream(messages, options)
   }
+}
+
+/** A tool search strategy that returns fixed names best-first, ignoring the query and candidates. */
+function createStaticToolSearch(names: string[]): ToolSearchStrategy {
+  return { search: async () => names.map((name, index) => ({ name, score: names.length - index })) }
 }
 
 /** Tools across unrelated topics, so a `keep` well below the count hides most of them. */

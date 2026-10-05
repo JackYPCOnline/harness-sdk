@@ -10,7 +10,6 @@ import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
 import { RETRIEVAL_TOOL_NAME as OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
 import { Message, TextBlock, ToolResultBlock } from '../../../types/messages.js'
 import { createMockAgent, invokeTrackedHook } from '../../../__fixtures__/agent-helpers.js'
-import { createStaticToolSearch } from '../../../__fixtures__/search-helpers.js'
 import type { MockAgent } from '../../../__fixtures__/agent-helpers.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
 import type { HideToolSpecsConfig, ToolSearchStrategy } from '../hide/index.js'
@@ -33,6 +32,11 @@ function attach(strategy: ToolSelectionStrategy): { agent: MockAgent; handler: I
   strategy.init(agent)
   if (!handler) throw new Error('strategy did not register an Input handler')
   return { agent, handler }
+}
+
+/** A tool search strategy that returns fixed names best-first, ignoring the query and candidates. */
+function createStaticToolSearch(names: string[]): ToolSearchStrategy {
+  return { search: async () => names.map((name, index) => ({ name, score: names.length - index })) }
 }
 
 /** A tool search strategy whose `search` is a spy returning fixed names. */
