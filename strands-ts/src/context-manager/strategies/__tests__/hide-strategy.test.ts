@@ -552,6 +552,19 @@ describe('Hide.toolSpecs', () => {
       expect(search).toHaveBeenCalledTimes(1)
     })
 
+    it('treats plural-form affirmations as continuations', async () => {
+      const search = spySearch(['billing_search'])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
+      await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
+      for (const ack of ['sounds good', 'thanks']) {
+        const result = await handler(
+          context(agent, catalog, { invocationState: {}, messages: followUp('billing', ack) })
+        )
+        expect(names(result.toolSpecs)).toEqual(['billing_search'])
+      }
+      expect(search.search).toHaveBeenCalledTimes(1)
+    })
+
     it('does not add tools that only mention the acknowledgement in their description', async () => {
       const search = createStaticToolSearch(['search_flights'])
       const tasks = [

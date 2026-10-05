@@ -402,6 +402,7 @@ function isContinuation(query: string): boolean {
   return true
 }
 
+/** Spelled as `contentTerms` emits them: lowercase and plural-normalized (`thank`, `sound`). */
 const ACKNOWLEDGEMENTS: ReadonlySet<string> = new Set([
   'yes',
   'yeah',
@@ -415,7 +416,6 @@ const ACKNOWLEDGEMENTS: ReadonlySet<string> = new Set([
   'great',
   'right',
   'correct',
-  'thanks',
   'thank',
   'please',
   'go',
@@ -425,7 +425,7 @@ const ACKNOWLEDGEMENTS: ReadonlySet<string> = new Set([
   'confirm',
   'confirmed',
   'done',
-  'sounds',
+  'sound',
   'perfect',
   'alright',
   'cool',
