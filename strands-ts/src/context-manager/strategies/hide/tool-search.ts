@@ -88,6 +88,20 @@ export function contentTerms(text: string): Set<string> {
   return terms
 }
 
+/**
+ * Whether a content term of `query` appears in the tool's name, split and normalized the way
+ * `KeywordToolSearch` splits names. Independent of the configured strategy, so a continuation
+ * turn can add the tool it literally names without paying for or depending on a ranking.
+ *
+ * @param query - Raw query text
+ * @param spec - The tool spec
+ * @returns True when the query names the tool
+ * @internal
+ */
+export function namesTool(query: string, spec: ToolSpec): boolean {
+  return overlap(contentTerms(splitIdentifier(query)), splitIdentifier(spec.name)) > 0
+}
+
 /** Count of `text`'s distinct content terms that appear in `queryTerms`. */
 function overlap(queryTerms: ReadonlySet<string>, text: string): number {
   let hits = 0

@@ -15,7 +15,7 @@ import { TextBlock } from '../../../types/messages.js'
 import { OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
 import { BaseHideStrategy } from './base.js'
-import { KeywordToolSearch, contentTerms } from './tool-search.js'
+import { KeywordToolSearch, contentTerms, namesTool } from './tool-search.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
 import type { ToolSpec } from '../../../tools/types.js'
 import type { LocalAgent } from '../../../types/agent.js'
@@ -226,10 +226,11 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
 
   /**
    * Select the names to show for this invocation and record them as what the agent's model last
-   * saw. A continuation turn ("yes, do it", "ok confirm") keeps the previous view and adds any tool
-   * its words name, so an acknowledgement can neither swap out the tool the model is mid-task with
-   * nor hide the one it asks for. Anything else is ranked; no matches, or a search failure, goes
-   * to `onFailure`.
+   * saw. A continuation turn ("yes, do it", "ok confirm") keeps the previous view and adds only the
+   * tools its words name, without ranking, so an acknowledgement can neither swap out the tool the
+   * model is mid-task with nor hide the one it asks for, and a word that merely appears in some
+   * description does not grow the prefix. Anything else is ranked; no matches, or a search
+   * failure, goes to `onFailure`.
    */
   private async _select(context: InvokeModelContext, eligible: readonly ToolSpec[]): Promise<ReadonlySet<string>> {
     const eligibleNames = new Set(eligible.map((spec) => spec.name))
@@ -239,9 +240,10 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     try {
       const carried = isContinuation(query) ? this._carryForward(context.agent, eligibleNames) : undefined
       if (carried) {
-        selected = new Set([...carried, ...(await this._matches(eligible, query))])
+        const named = eligible.filter((spec) => namesTool(query, spec)).map((spec) => spec.name)
+        selected = new Set([...carried, ...named])
         logger.debug(
-          `strategy=<${this.name}>, added=<${selected.size - carried.size}> | continuation turn, carrying previous view forward`
+          `strategy=<${this.name}>, added=<${named.join(',')}> | continuation turn, carrying previous view forward`
         )
       } else {
         selected = await this._rank(eligible, query)
@@ -264,7 +266,12 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
    * `Hide`'s budget semantics and applies whatever strategy produced the matches.
    */
   private async _rank(eligible: readonly ToolSpec[], query: string): Promise<Set<string>> {
-    const selected = await this._matches(eligible, query)
+    const eligibleNames = new Set(eligible.map((spec) => spec.name))
+    const selected = new Set<string>()
+    for (const result of await this._search.search(query, eligible, this._keep)) {
+      if (selected.size >= this._keep) break
+      if (eligibleNames.has(result.name)) selected.add(result.name)
+    }
     if (selected.size === 0) return selected
 
     for (const spec of eligible) {
@@ -272,17 +279,6 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
       selected.add(spec.name)
     }
     return selected
-  }
-
-  /** The strategy's matches that name a candidate, best-first, at most `keep`. */
-  private async _matches(eligible: readonly ToolSpec[], query: string): Promise<Set<string>> {
-    const eligibleNames = new Set(eligible.map((spec) => spec.name))
-    const matched = new Set<string>()
-    for (const result of await this._search.search(query, eligible, this._keep)) {
-      if (matched.size >= this._keep) break
-      if (eligibleNames.has(result.name)) matched.add(result.name)
-    }
-    return matched
   }
 
   private _fallback(eligibleNames: ReadonlySet<string>): ReadonlySet<string> {

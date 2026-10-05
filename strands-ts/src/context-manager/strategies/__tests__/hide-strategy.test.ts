@@ -519,20 +519,30 @@ describe('Hide.toolSpecs', () => {
       await handler(context(agent, travel, { invocationState: {}, messages: [user('book the flight')] }))
       const result = await handler(context(agent, travel, { invocationState: {}, messages: [user('yes, confirm')] }))
       expect(names(result.toolSpecs)).toEqual(['book_flight', 'confirm_payment'])
+      expect(search).toHaveBeenCalledTimes(1)
     })
 
-    it('adds tools the acknowledgement names to the carried view', async () => {
-      const search = vi.fn(async (query: string) => {
-        if (query.includes('shoes')) return [{ name: 'search_products', score: 1 }]
-        if (query.includes('confirm')) return [{ name: 'confirm_order', score: 1 }]
-        return []
-      })
+    it('does not add tools that only mention the acknowledgement in their description', async () => {
+      const search = createStaticToolSearch(['search_flights'])
+      const tasks = [
+        spec('search_flights', 'Search flights'),
+        spec('mark_task', 'Marks a task as done'),
+        spec('finalize_report', 'Finalize a report once review is done'),
+      ]
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
+      await handler(context(agent, tasks, { invocationState: {}, messages: [user('search flights to Paris')] }))
+      const result = await handler(context(agent, tasks, { invocationState: {}, messages: [user('ok, done')] }))
+      expect(names(result.toolSpecs)).toEqual(['search_flights'])
+    })
+
+    it('adds tools the acknowledgement names to the carried view, whatever the strategy', async () => {
+      const search = createStaticToolSearch(['search_products'])
       const checkout = [
         spec('search_products', 'Search the catalog'),
         spec('add_to_cart', 'Add an item to the cart'),
         spec('confirm_order', 'Confirm and place the order'),
       ]
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { search: { search }, keep: 1 }))
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       await handler(context(agent, checkout, { invocationState: {}, messages: [user('search for red shoes')] }))
       const result = await handler(context(agent, checkout, { invocationState: {}, messages: [user('confirm')] }))
       expect(names(result.toolSpecs)).toEqual(['search_products', 'confirm_order'])

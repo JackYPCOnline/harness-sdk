@@ -86,6 +86,29 @@ for (const provider of [bedrock, anthropic]) {
       }
     })
 
+    it('keeps the previous view on a continuation turn', async () => {
+      const model = createModel()
+      const streamSpy = vi.spyOn(model, 'stream')
+      const agent = new Agent({
+        model,
+        tools: catalog(),
+        printer: false,
+        contextManager: new ContextManager({ strategies: [Hide.toolSpecs({ keep: 2 })], stash: false }),
+      })
+
+      await agent.invoke('What is the weather in Paris right now? Use the get_weather tool.')
+      const firstTurn = toolNamesPerCall(streamSpy)
+      const firstTurnCalls = streamSpy.mock.calls.length
+      const result = await agent.invoke('ok thanks')
+
+      expect(result.stopReason).toBe('endTurn')
+      const secondTurn = toolNamesPerCall(streamSpy).slice(firstTurnCalls)
+      expect(secondTurn.length).toBeGreaterThanOrEqual(1)
+      for (const names of secondTurn) {
+        expect(names).toEqual(firstTurn[0])
+      }
+    })
+
     it('leaves a catalog that fits within keep untouched', async () => {
       const model = createModel()
       const streamSpy = vi.spyOn(model, 'stream')
