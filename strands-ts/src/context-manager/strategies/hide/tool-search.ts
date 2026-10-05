@@ -24,8 +24,19 @@ export interface ToolSearchResult {
 }
 
 /**
+ * Options for a {@link ToolSearchStrategy} search.
+ *
+ * @internal
+ */
+export interface ToolSearchOptions {
+  /** How many results the caller will use. When omitted, every ranked match is returned. */
+  limit?: number
+}
+
+/**
  * Ranks tool specs by relevance to a query. Implementations may be lexical, an LLM judge, or an
- * adapter over a persistent index; `Hide` keeps the first `limit` results that name a candidate.
+ * adapter over a persistent index; `Hide` keeps the first results that name a candidate, up to
+ * the `limit` it passes.
  *
  * @internal
  */
@@ -36,10 +47,10 @@ export interface ToolSearchStrategy {
    * @param query - `Hide`'s projection of the conversation; today the latest user text. Strategies
    *   that need more context get it through a richer projection, not a wider signature.
    * @param candidates - The specs eligible for selection, in catalog order
-   * @param limit - How many results the caller will use
-   * @returns Matches ranked best-first, at most `limit`
+   * @param options - Search options; `Hide` always passes `limit`
+   * @returns Matches ranked best-first, at most `options.limit` when given
    */
-  search(query: string, candidates: readonly ToolSpec[], limit: number): Promise<ToolSearchResult[]>
+  search(query: string, candidates: readonly ToolSpec[], options?: ToolSearchOptions): Promise<ToolSearchResult[]>
 }
 
 /**
@@ -54,7 +65,11 @@ export interface ToolSearchStrategy {
  * @internal
  */
 export const KeywordToolSearch: ToolSearchStrategy = {
-  async search(query: string, candidates: readonly ToolSpec[], limit: number): Promise<ToolSearchResult[]> {
+  async search(
+    query: string,
+    candidates: readonly ToolSpec[],
+    options?: ToolSearchOptions
+  ): Promise<ToolSearchResult[]> {
     // Raw terms meet descriptions, which are not split ("DynamoDB"); split terms meet names.
     const queryTerms = contentTerms(`${query} ${splitIdentifier(query)}`)
     if (queryTerms.size === 0) return []
@@ -68,7 +83,7 @@ export const KeywordToolSearch: ToolSearchStrategy = {
       if (score > 0) scored.push({ name: spec.name, score })
     }
     scored.sort((left, right) => right.score - left.score)
-    return scored.slice(0, limit)
+    return options?.limit === undefined ? scored : scored.slice(0, options.limit)
   },
 }
 

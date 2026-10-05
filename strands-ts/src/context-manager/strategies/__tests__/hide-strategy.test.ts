@@ -282,7 +282,7 @@ describe('Hide.toolSpecs', () => {
         ],
       })
       await handler({ ...input, messages: [injected], dynamicTrailingBlocks: 1 })
-      expect(search.search).toHaveBeenCalledWith('refund my billing charge', expect.any(Array), 2)
+      expect(search.search).toHaveBeenCalledWith('refund my billing charge', expect.any(Array), { limit: 2 })
     })
 
     it('derives the query from the latest user text, skipping tool-result-only turns', async () => {
@@ -290,7 +290,7 @@ describe('Hide.toolSpecs', () => {
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2 }))
       const messages = [user('first'), user('  track the shipment  '), toolResultOnly()]
       await handler(context(agent, catalog, { messages }))
-      expect(search.search).toHaveBeenCalledWith('track the shipment', expect.any(Array), 2)
+      expect(search.search).toHaveBeenCalledWith('track the shipment', expect.any(Array), { limit: 2 })
     })
 
     it('passes only the eligible specs as candidates, with keep as the limit', async () => {
@@ -298,7 +298,7 @@ describe('Hide.toolSpecs', () => {
       const { agent, handler } = attach(toolSpecs(['toolSpec::*', '!toolSpec::ask_user'], { search, keep: 3 }))
       await handler(context(agent, catalog))
       const eligible = catalog.filter((entry) => entry.name !== 'ask_user')
-      expect(search.search).toHaveBeenCalledWith(expect.any(String), eligible, 3)
+      expect(search.search).toHaveBeenCalledWith(expect.any(String), eligible, { limit: 3 })
     })
 
     it('fills the keep budget from unmatched candidates in catalog order', async () => {
@@ -851,7 +851,7 @@ describe('KeywordToolSearch', () => {
     spec('bookFlight', 'Book a flight to a destination'),
   ]
   const rank = async (query: string, limit = 10): Promise<string[]> =>
-    (await KeywordToolSearch.search(query, weather, limit)).map((match) => match.name)
+    (await KeywordToolSearch.search(query, weather, { limit: limit })).map((match) => match.name)
 
   it('splits snake_case names and weights name hits over description hits', async () => {
     expect(await rank('weather Paris')).toEqual(['get_weather', 'city_guide'])
@@ -874,7 +874,7 @@ describe('KeywordToolSearch', () => {
       spec('youtube_search', 'Search YouTube videos'),
     ]
     const first = async (query: string): Promise<string[]> =>
-      (await KeywordToolSearch.search(query, specs, 1)).map((match) => match.name)
+      (await KeywordToolSearch.search(query, specs, { limit: 1 })).map((match) => match.name)
     expect(await first('look up the order in DynamoDB')).toEqual(['order_status'])
     expect(await first('query the DynamoDB table')).toEqual(['dynamodb_query'])
     expect(await first('search GitHub')).toEqual(['github_search'])
@@ -882,7 +882,7 @@ describe('KeywordToolSearch', () => {
 
   it('splits acronym boundaries', async () => {
     const specs = [spec('parseHTTPBody', 'Parse a request body'), spec('other', 'Unrelated')]
-    const results = await KeywordToolSearch.search('http body', specs, 10)
+    const results = await KeywordToolSearch.search('http body', specs, { limit: 10 })
     expect(results.map((match) => match.name)).toEqual(['parseHTTPBody'])
   })
 
@@ -903,12 +903,17 @@ describe('KeywordToolSearch', () => {
     expect(await rank('city', 1)).toEqual(['city_guide'])
   })
 
+  it('returns every ranked match when no limit is given', async () => {
+    const results = await KeywordToolSearch.search('city', weather)
+    expect(results.map((match) => match.name)).toEqual(['city_guide', 'get_weather'])
+  })
+
   it('ranks any name hit above any number of description hits', async () => {
     const specs = [
       spec('crm_note', 'Send a weather note by email about the email weather'),
       spec('send_email', 'Deliver a message'),
     ]
-    const results = await KeywordToolSearch.search('send weather email', specs, 10)
+    const results = await KeywordToolSearch.search('send weather email', specs, { limit: 10 })
     expect(results.map((match) => match.name)).toEqual(['send_email', 'crm_note'])
   })
 
@@ -920,7 +925,7 @@ describe('KeywordToolSearch', () => {
       spec('run_query', 'Run a query'),
     ]
     const first = async (query: string): Promise<string | undefined> =>
-      (await KeywordToolSearch.search(query, specs, 1))[0]?.name
+      (await KeywordToolSearch.search(query, specs, { limit: 1 }))[0]?.name
     expect(await first('refunds for customer 42')).toBe('refund_invoice')
     expect(await first('show my bookings')).toBe('create_booking')
     expect(await first('book a flight')).toBe('search_flights')
@@ -934,14 +939,14 @@ describe('KeywordToolSearch', () => {
       spec('list_classes', 'List the classes in a module'),
     ]
     const first = async (query: string): Promise<string | undefined> =>
-      (await KeywordToolSearch.search(query, specs, 1))[0]?.name
+      (await KeywordToolSearch.search(query, specs, { limit: 1 }))[0]?.name
     expect(await first('kill a process')).toBe('list_processes')
     expect(await first('check the addresses')).toBe('validate_address')
     expect(await first('show the class')).toBe('list_classes')
   })
 
   it('returns scores with higher meaning more relevant', async () => {
-    const results = await KeywordToolSearch.search('weather', weather, 10)
+    const results = await KeywordToolSearch.search('weather', weather, { limit: 10 })
     expect(results).toEqual([
       { name: 'get_weather', score: 1 },
       { name: 'city_guide', score: 0.5 },

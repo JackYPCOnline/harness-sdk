@@ -274,7 +274,7 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
   private async _rank(eligible: readonly ToolSpec[], query: string): Promise<Set<string>> {
     const eligibleNames = new Set(eligible.map((spec) => spec.name))
     const selected = new Set<string>()
-    for (const result of await this._search.search(query, eligible, this._keep)) {
+    for (const result of await this._search.search(query, eligible, { limit: this._keep })) {
       if (selected.size >= this._keep) break
       if (eligibleNames.has(result.name)) selected.add(result.name)
     }

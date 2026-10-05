@@ -12,7 +12,7 @@ import { HideToolSpecsStrategy } from './tool-specs.js'
 
 export type { HideConditions, HideStrategyBuilder } from './base.js'
 export type { HideFailurePolicy, HideToolSpecsConfig, HideToolSpecsTarget } from './tool-specs.js'
-export type { ToolSearchResult, ToolSearchStrategy } from './tool-search.js'
+export type { ToolSearchOptions, ToolSearchResult, ToolSearchStrategy } from './tool-search.js'
 export { KeywordToolSearch } from './tool-search.js'
 
 /**
