@@ -36,8 +36,8 @@ interface HideNamespace {
  * Hide.toolSpecs().when({ count: 20 })
  * // Same, keeping 5
  * Hide.toolSpecs({ keep: 5 }).when({ count: 20 })
- * // Pin ask_user and finish: always visible, never counted against keep
- * Hide.toolSpecs(['toolSpec::*', '!toolSpec::ask_user', '!toolSpec::finish'], { keep: 15 }).when({ count: 20 })
+ * // Pin ask_user and finish: always visible, outside keep and count (count sees 18 of 20 tools here)
+ * Hide.toolSpecs(['toolSpec::*', '!toolSpec::ask_user', '!toolSpec::finish'], { keep: 15 }).when({ count: 18 })
  * // Only the billing tools are candidates; everything else stays visible
  * Hide.toolSpecs(['toolSpec::billing_search', 'toolSpec::billing_summary'], { keep: 1 })
  * // Never show debug_dump, and show only pinned tools if search fails

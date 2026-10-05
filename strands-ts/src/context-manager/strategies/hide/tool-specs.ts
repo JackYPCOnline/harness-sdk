@@ -12,7 +12,7 @@ import { MANAGE_TOOL_NAME as BACKGROUND_TASK_TOOL_NAME } from '../../../backgrou
 import { logger } from '../../../logging/logger.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
 import { TextBlock } from '../../../types/messages.js'
-import { OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
+import { RETRIEVAL_TOOL_NAME as OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
 import { BaseHideStrategy } from './base.js'
 import { KeywordToolSearch, contentTerms, namesTool } from './tool-search.js'
@@ -137,10 +137,12 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     if (config?.keep !== undefined && (!Number.isInteger(config.keep) || config.keep < 1)) {
       throw new Error(`keep must be a positive integer, got ${config.keep}`)
     }
+    const { candidates, pinned } = resolveTarget(target)
     for (const name of config?.alwaysHide ?? []) {
       if (name.startsWith(TOOL_SPEC_PREFIX) || name.startsWith(`!${TOOL_SPEC_PREFIX}`)) {
         throw new Error(`alwaysHide takes bare tool names, got '${name}'`)
       }
+      if (pinned.has(name)) throw new Error(`'${name}' is both pinned and in alwaysHide`)
     }
     if (this._count !== undefined && this._count <= (config?.keep ?? DEFAULT_KEEP)) {
       logger.warn(
@@ -153,7 +155,6 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     this._keep = config?.keep ?? DEFAULT_KEEP
     this._alwaysHide = new Set(config?.alwaysHide ?? [])
     this._onFailure = config?.onFailure ?? 'all'
-    const { candidates, pinned } = resolveTarget(target)
     this._candidates = candidates
     this._pinned = pinned
   }
@@ -175,7 +176,7 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
       (spec) => PROTECTED_TOOLS.has(spec.name) || spec.name === forced || !this._alwaysHide.has(spec.name)
     )
 
-    const state = this._getState(context.invocationState) ?? (await this._decide(context, shown))
+    const state = this._getState(context.agent, context.invocationState) ?? (await this._decide(context, shown))
     if (state.selected === undefined) return this._emit(context, catalog, shown)
 
     const { selected, considered } = state
@@ -200,7 +201,7 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
       selected = await this._select(context, eligible)
     }
     const state = { selected, considered }
-    this._setState(context.invocationState, state)
+    this._setState(context.agent, context.invocationState, state)
     return state
   }
 
@@ -234,11 +235,16 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
    */
   private async _select(context: InvokeModelContext, eligible: readonly ToolSpec[]): Promise<ReadonlySet<string>> {
     const eligibleNames = new Set(eligible.map((spec) => spec.name))
-    const query = queryFromMessages(context.messages)
+    // The durable history, not the per-call projection: earlier input middleware (memory,
+    // context injection) folds text into the projection's last user message, and that text is
+    // not what the user asked for.
+    const history = context.agent.messages
+    const query = queryFromMessages(history)
 
     let selected: ReadonlySet<string>
     try {
-      const carried = isContinuation(query) ? this._carryForward(context.agent, eligibleNames) : undefined
+      const carried =
+        isContinuation(query) && hasPriorTurn(history) ? this._carryForward(context.agent, eligibleNames) : undefined
       if (carried) {
         const named = eligible.filter((spec) => namesTool(query, spec)).map((spec) => spec.name)
         selected = new Set([...carried, ...named])
@@ -375,6 +381,11 @@ function queryFromMessages(messages: readonly Message[]): string {
   return ''
 }
 
+/** True when the history holds an assistant turn, so there is a previous view worth carrying. */
+function hasPriorTurn(messages: readonly Message[]): boolean {
+  return messages.some((message) => message.role === 'assistant')
+}
+
 /** True once an assistant message carries usage; the loop then projects from that baseline. */
 function hasUsageBaseline(messages: readonly Message[]): boolean {
   return messages.some((message) => message.role === 'assistant' && message.metadata?.usage !== undefined)
@@ -414,4 +425,15 @@ const ACKNOWLEDGEMENTS: ReadonlySet<string> = new Set([
   'confirm',
   'confirmed',
   'done',
+  'sounds',
+  'perfect',
+  'alright',
+  'cool',
+  'awesome',
+  'nice',
+  'yup',
+  'agreed',
+  'understood',
+  'exactly',
+  'absolutely',
 ])

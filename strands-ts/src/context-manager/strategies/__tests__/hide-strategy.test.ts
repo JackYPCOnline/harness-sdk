@@ -7,7 +7,7 @@ import { InvokeModelStage } from '../../../middleware/stages.js'
 import { AfterInvocationEvent, BeforeInvocationEvent } from '../../../hooks/events.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
-import { OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
+import { RETRIEVAL_TOOL_NAME as OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
 import { Message, TextBlock, ToolResultBlock } from '../../../types/messages.js'
 import { createMockAgent, invokeTrackedHook } from '../../../__fixtures__/agent-helpers.js'
 import { createStaticToolSearch } from '../../../__fixtures__/search-helpers.js'
@@ -52,6 +52,15 @@ function user(text: string): Message {
   return new Message({ role: 'user', content: [new TextBlock(text)] })
 }
 
+function assistant(text: string): Message {
+  return new Message({ role: 'assistant', content: [new TextBlock(text)] })
+}
+
+/** History for a second invocation: the first turn, its reply, and the new user turn. */
+function followUp(first: string, second: string): Message[] {
+  return [user(first), assistant('done'), user(second)]
+}
+
 function toolResultOnly(): Message {
   return new Message({
     role: 'user',
@@ -82,11 +91,13 @@ function context(
   overrides?: Partial<Pick<InvokeModelContext, 'messages' | 'toolChoice' | 'invocationState' | 'model'>>
 ): InvokeModelContext {
   const model = overrides?.model ?? countingModel()
-  Object.assign(agent, { model })
+  const messages = overrides?.messages ?? [user('search the billing records')]
+  // Hide reads the query from the agent's durable history, not the per-call projection.
+  Object.assign(agent, { model, messages })
   return {
     agent,
     model,
-    messages: overrides?.messages ?? [user('search the billing records')],
+    messages,
     toolSpecs,
     invocationState: overrides?.invocationState ?? {},
     ...(overrides?.toolChoice !== undefined && { toolChoice: overrides.toolChoice }),
@@ -259,6 +270,21 @@ describe('Hide.toolSpecs', () => {
       expect(names(shipping.toolSpecs)).toEqual(['shipping_search'])
     })
 
+    it('reads the query from the durable history, not the per-call projection', async () => {
+      const search = spySearch(['billing_search'])
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2 }))
+      const input = context(agent, catalog, { messages: [user('refund my billing charge')] })
+      const injected = new Message({
+        role: 'user',
+        content: [
+          new TextBlock('refund my billing charge'),
+          new TextBlock('<memory>shipping tracking numbers</memory>'),
+        ],
+      })
+      await handler({ ...input, messages: [injected], dynamicTrailingBlocks: 1 })
+      expect(search.search).toHaveBeenCalledWith('refund my billing charge', expect.any(Array), 2)
+    })
+
     it('derives the query from the latest user text, skipping tool-result-only turns', async () => {
       const search = spySearch(['billing_search'])
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2 }))
@@ -335,11 +361,9 @@ describe('Hide.toolSpecs', () => {
       expect(names(result.toolSpecs)).toEqual(['ask_user'])
     })
 
-    it('wins over a pin', async () => {
+    it('throws when a name is both pinned and in alwaysHide', () => {
       const target = ['toolSpec::*', '!toolSpec::ask_user']
-      const { agent, handler } = attach(toolSpecs(target, { keep: 1, alwaysHide: ['ask_user'] }))
-      const result = await handler(context(agent, catalog))
-      expect(names(result.toolSpecs)).toEqual(['billing_search'])
+      expect(() => Hide.toolSpecs(target, { alwaysHide: ['ask_user'] })).toThrow('both pinned and in alwaysHide')
     })
 
     it('cannot hide protected tools', async () => {
@@ -414,7 +438,9 @@ describe('Hide.toolSpecs', () => {
       }
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1, onFailure: 'none' }))
       await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
-      const result = await handler(context(agent, catalog, { invocationState: {}, messages: [user('thanks')] }))
+      const result = await handler(
+        context(agent, catalog, { invocationState: {}, messages: followUp('billing', 'thanks') })
+      )
       expect(names(result.toolSpecs)).toEqual(['billing_search'])
     })
   })
@@ -506,7 +532,9 @@ describe('Hide.toolSpecs', () => {
       const travel = [spec('book_flight', 'Book a flight'), spec('confirm_payment', 'Confirm a payment')]
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search: { search }, keep: 1 }))
       await handler(context(agent, travel, { invocationState: {}, messages: [user('book the flight')] }))
-      const result = await handler(context(agent, travel, { invocationState: {}, messages: [user('yes, go ahead')] }))
+      const result = await handler(
+        context(agent, travel, { invocationState: {}, messages: followUp('book the flight', 'yes, go ahead') })
+      )
       expect(names(result.toolSpecs)).toEqual(['book_flight'])
     })
 
@@ -517,7 +545,9 @@ describe('Hide.toolSpecs', () => {
       const travel = [spec('book_flight', 'Book a flight'), spec('confirm_payment', 'Confirm a payment')]
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search: { search }, keep: 1 }))
       await handler(context(agent, travel, { invocationState: {}, messages: [user('book the flight')] }))
-      const result = await handler(context(agent, travel, { invocationState: {}, messages: [user('yes, confirm')] }))
+      const result = await handler(
+        context(agent, travel, { invocationState: {}, messages: followUp('book the flight', 'yes, confirm') })
+      )
       expect(names(result.toolSpecs)).toEqual(['book_flight', 'confirm_payment'])
       expect(search).toHaveBeenCalledTimes(1)
     })
@@ -531,7 +561,9 @@ describe('Hide.toolSpecs', () => {
       ]
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       await handler(context(agent, tasks, { invocationState: {}, messages: [user('search flights to Paris')] }))
-      const result = await handler(context(agent, tasks, { invocationState: {}, messages: [user('ok, done')] }))
+      const result = await handler(
+        context(agent, tasks, { invocationState: {}, messages: followUp('search flights to Paris', 'ok, done') })
+      )
       expect(names(result.toolSpecs)).toEqual(['search_flights'])
     })
 
@@ -544,7 +576,9 @@ describe('Hide.toolSpecs', () => {
       ]
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       await handler(context(agent, checkout, { invocationState: {}, messages: [user('search for red shoes')] }))
-      const result = await handler(context(agent, checkout, { invocationState: {}, messages: [user('confirm')] }))
+      const result = await handler(
+        context(agent, checkout, { invocationState: {}, messages: followUp('search for red shoes', 'confirm') })
+      )
       expect(names(result.toolSpecs)).toEqual(['search_products', 'confirm_order'])
     })
 
@@ -571,7 +605,9 @@ describe('Hide.toolSpecs', () => {
       }
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
-      const result = await handler(context(agent, catalog, { invocationState: {}, messages: [user('thanks')] }))
+      const result = await handler(
+        context(agent, catalog, { invocationState: {}, messages: followUp('billing', 'thanks') })
+      )
       expect(names(result.toolSpecs)).toEqual(['billing_search'])
     })
 
@@ -582,7 +618,9 @@ describe('Hide.toolSpecs', () => {
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
       await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
       await handler(context(agent, catalog, { invocationState: {}, messages: [user('plane ticket to Paris')] }))
-      const result = await handler(context(agent, catalog, { invocationState: {}, messages: [user('yes go ahead')] }))
+      const result = await handler(
+        context(agent, catalog, { invocationState: {}, messages: followUp('plane ticket to Paris', 'yes go ahead') })
+      )
       expect(names(result.toolSpecs)).toEqual(names(catalog))
     })
 
@@ -593,7 +631,9 @@ describe('Hide.toolSpecs', () => {
       const strategy = toolSpecs('toolSpecs', { search, keep: 1, onFailure: 'none' }).when({ count: 5 })
       const { agent, handler } = attach(strategy as HideToolSpecsStrategy)
       await handler(context(agent, catalog.slice(0, 4), { invocationState: {}, messages: [user('billing')] }))
-      const result = await handler(context(agent, catalog, { invocationState: {}, messages: [user('ok thanks')] }))
+      const result = await handler(
+        context(agent, catalog, { invocationState: {}, messages: followUp('billing', 'ok thanks') })
+      )
       expect(names(result.toolSpecs)).toEqual(names(catalog.slice(0, 4)))
     })
 
@@ -746,6 +786,24 @@ describe('Hide.toolSpecs', () => {
       await handler(context(agent, catalog, { invocationState }))
       await invokeTrackedHook(agent, new BeforeInvocationEvent({ agent, invocationState }))
       await handler(context(agent, catalog, { invocationState }))
+      expect(search.search).toHaveBeenCalledTimes(2)
+    })
+
+    it('keeps a parent selection when a child agent shares the strategy and invocation state', async () => {
+      const search = spySearch(['billing_search'])
+      const strategy = toolSpecs('toolSpecs', { search, keep: 1 })
+      const { agent: parent, handler: parentHandler } = attach(strategy)
+      const { agent: child, handler: childHandler } = attach(strategy)
+      const invocationState: InvocationState = {}
+
+      await parentHandler(context(parent, catalog, { invocationState }))
+      await childHandler(context(child, catalog, { invocationState }))
+      await invokeTrackedHook(child, new AfterInvocationEvent({ agent: child, invocationState }))
+      const parentAgain = await parentHandler(
+        context(parent, catalog, { invocationState, messages: [toolResultOnly()] })
+      )
+
+      expect(names(parentAgain.toolSpecs)).toEqual(['billing_search'])
       expect(search.search).toHaveBeenCalledTimes(2)
     })
 

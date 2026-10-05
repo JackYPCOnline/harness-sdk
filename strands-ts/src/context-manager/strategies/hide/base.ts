@@ -52,10 +52,12 @@ export abstract class BaseHideStrategy<TState extends object> implements Context
 
   protected readonly _count: number | undefined
   /**
-   * Per-invocation state, keyed by the invocation's state object. Callers may reuse one
-   * `invocationState` object across invocations, so the boundary hooks still clear it.
+   * Per-invocation state, keyed by agent and then by the invocation's state object. The agent key
+   * matters because `AgentAsTool` forwards the parent's `invocationState` to the child, and one
+   * strategy instance may serve both; the invocation key matters because callers may reuse one
+   * `invocationState` object across invocations, which is why the boundary hooks still clear it.
    */
-  private readonly _state = new WeakMap<InvocationState, TState>()
+  private readonly _state = new WeakMap<LocalAgent, WeakMap<InvocationState, TState>>()
 
   constructor(conditions?: HideConditions) {
     if (conditions?.count !== undefined && (!Number.isInteger(conditions.count) || conditions.count < 0)) {
@@ -66,10 +68,10 @@ export abstract class BaseHideStrategy<TState extends object> implements Context
 
   init(agent: LocalAgent): void {
     agent.addMiddleware(InvokeModelStage.Input, (context) => this._transform(context))
-    agent.addHook(AfterInvocationEvent, (event) => this._clearState(event.invocationState), {
+    agent.addHook(AfterInvocationEvent, (event) => this._clearState(event.agent, event.invocationState), {
       order: HookOrder.SDK_LAST,
     })
-    agent.addHook(BeforeInvocationEvent, (event) => this._clearState(event.invocationState), {
+    agent.addHook(BeforeInvocationEvent, (event) => this._clearState(event.agent, event.invocationState), {
       order: HookOrder.SDK_FIRST,
     })
   }
@@ -82,15 +84,20 @@ export abstract class BaseHideStrategy<TState extends object> implements Context
   /** Filter the model input for one call. */
   protected abstract _transform(context: InvokeModelContext): Promise<InvokeModelContext>
 
-  protected _getState(invocationState: InvocationState): TState | undefined {
-    return this._state.get(invocationState)
+  protected _getState(agent: LocalAgent, invocationState: InvocationState): TState | undefined {
+    return this._state.get(agent)?.get(invocationState)
   }
 
-  protected _setState(invocationState: InvocationState, state: TState): void {
-    this._state.set(invocationState, state)
+  protected _setState(agent: LocalAgent, invocationState: InvocationState, state: TState): void {
+    let states = this._state.get(agent)
+    if (states === undefined) {
+      states = new WeakMap()
+      this._state.set(agent, states)
+    }
+    states.set(invocationState, state)
   }
 
-  private _clearState(invocationState: InvocationState): void {
-    this._state.delete(invocationState)
+  private _clearState(agent: LocalAgent, invocationState: InvocationState): void {
+    this._state.get(agent)?.delete(invocationState)
   }
 }
