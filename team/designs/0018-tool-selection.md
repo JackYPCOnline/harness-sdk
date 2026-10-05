@@ -81,7 +81,7 @@ sequenceDiagram
         CM->>T: tool_specs unchanged
     else first call of the invocation
         CM->>H: apply(tool_specs)
-        H->>S: search(query, candidates, keep)
+        H->>S: search(query, candidates, limit=keep)
         S-->>H: ranked names (or failure → on_failure)
         H-->>CM: selected names
         CM->>T: selected specs in catalog order
@@ -160,9 +160,13 @@ class ToolSearchResult:
     name: str
     score: float   # higher is more relevant; the contract is result ORDER, best-first
 
+@dataclass(frozen=True)
+class ToolSearchOptions:
+    limit: int | None = None   # Hide always passes keep; None returns every ranked match
+
 class ToolSearchStrategy(Protocol):
     async def search(
-        self, query: str, candidates: Sequence[ToolSpec], limit: int
+        self, query: str, candidates: Sequence[ToolSpec], options: ToolSearchOptions | None = None
     ) -> Sequence[ToolSearchResult]: ...
 
 class Hide:
