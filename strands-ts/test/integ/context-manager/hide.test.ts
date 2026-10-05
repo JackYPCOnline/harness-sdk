@@ -6,7 +6,19 @@ import { ContextManager } from '$/sdk/context-manager/context-manager.js'
 import { Hide } from '$/sdk/context-manager/strategies/hide/index.js'
 import { bedrock, anthropic } from '../__fixtures__/model-providers.js'
 import { hasToolUse } from '../__fixtures__/test-helpers.js'
+import { STRUCTURED_OUTPUT_TOOL_NAME } from '$/sdk/tools/structured-output-tool.js'
 import type { Model } from '$/sdk/models/model.js'
+
+/**
+ * What a real provider adds over the mock-model tests: whether the provider accepts the requests
+ * Hide produces (a filtered `tools` list, a history that references tools no longer on the wire, a
+ * forced call against a filtered list), and whether the model behaves as the filtered list implies
+ * (completes a task with the reduced catalog, cannot call a tool it was not given). The selection
+ * itself is deterministic and covered by the unit tests; retrieval quality is the benchmark item.
+ *
+ * `vi.spyOn(model, 'stream')` captures the `toolSpecs` each request carried, which is the ground
+ * truth for what the provider received.
+ */
 
 /** A catalog wide enough that `keep` hides most of it; every tool answers with a fixed string. */
 function catalog(): ReturnType<typeof tool>[] {
@@ -84,6 +96,55 @@ for (const provider of [bedrock, anthropic]) {
       for (const names of secondTurn) {
         expect(names).toEqual(['refund_invoice'])
       }
+    })
+
+    it('cannot call a tool Hide removed, even when asked for it by name', async () => {
+      const model = createModel()
+      const streamSpy = vi.spyOn(model, 'stream')
+      const agent = new Agent({
+        model,
+        tools: catalog(),
+        printer: false,
+        contextManager: new ContextManager({
+          strategies: [Hide.toolSpecs({ keep: 3, alwaysHide: ['get_weather'] })],
+          stash: false,
+        }),
+      })
+
+      const result = await agent.invoke(
+        'What is the weather in Paris right now? Use the get_weather tool. If you cannot, say so in one sentence.'
+      )
+
+      expect(result.stopReason).toBe('endTurn')
+      expect(hasToolUse(agent.messages, 'get_weather')).toBe(false)
+      for (const names of toolNamesPerCall(streamSpy)) {
+        expect(names).not.toContain('get_weather')
+      }
+      expect(agent.tools.map((entry) => entry.name)).toContain('get_weather')
+    })
+
+    it('applies the selection on the forced structured-output call', async () => {
+      const model = createModel()
+      const streamSpy = vi.spyOn(model, 'stream')
+      const agent = new Agent({
+        model,
+        tools: catalog(),
+        printer: false,
+        structuredOutputSchema: z.object({ city: z.string(), conditions: z.string() }),
+        contextManager: new ContextManager({ strategies: [Hide.toolSpecs({ keep: 2 })], stash: false }),
+      })
+
+      const result = await agent.invoke('What is the weather in Paris right now? Use the get_weather tool.')
+
+      expect(result.structuredOutput).toMatchObject({ city: expect.stringContaining('Paris') })
+      const perCall = toolNamesPerCall(streamSpy)
+      expect(perCall.length).toBeGreaterThanOrEqual(2)
+      for (const names of perCall) {
+        expect(names).toHaveLength(3)
+        expect(names).toContain('get_weather')
+        expect(names).toContain(STRUCTURED_OUTPUT_TOOL_NAME)
+      }
+      expect(new Set(perCall.map((names) => names.join(','))).size).toBe(1)
     })
 
     it('keeps the previous view on a continuation turn', async () => {
