@@ -7,13 +7,13 @@
  */
 
 import type { HideStrategyBuilder } from './base.js'
-import type { HideToolSpecsConfig, HideToolSpecsTarget } from './tool-specs.js'
-import { HideToolSpecsStrategy } from './tool-specs.js'
+import type { HideToolSpecsConfig, HideToolSpecsTarget } from './hide-tool-specs.js'
+import { HideToolSpecsStrategy } from './hide-tool-specs.js'
 
 export type { HideConditions, HideStrategyBuilder } from './base.js'
-export type { HideFailurePolicy, HideToolSpecsConfig, HideToolSpecsTarget } from './tool-specs.js'
-export type { ToolSearchOptions, ToolSearchResult, ToolSearchStrategy } from './tool-search.js'
-export { KeywordToolSearch } from './tool-search.js'
+export type { HideFailurePolicy, HideToolSpecsConfig, HideToolSpecsTarget } from './hide-tool-specs.js'
+export type { ToolSearchOptions, ToolSearchResult, ToolSearchStrategy } from './search/index.js'
+export { KeywordToolSearchStrategy } from './search/index.js'
 
 /**
  * Hide strategy builder namespace.

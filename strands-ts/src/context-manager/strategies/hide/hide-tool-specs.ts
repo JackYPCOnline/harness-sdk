@@ -15,14 +15,14 @@ import { TextBlock } from '../../../types/messages.js'
 import { RETRIEVAL_TOOL_NAME as OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
 import { BaseHideStrategy } from './base.js'
-import { KeywordToolSearch, contentTerms, namesTool } from './tool-search.js'
+import { KeywordToolSearchStrategy, contentTerms, namesTool } from './search/keyword.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
 import type { ToolSpec } from '../../../tools/types.js'
 import type { LocalAgent } from '../../../types/agent.js'
 import type { Message } from '../../../types/messages.js'
 import type { ContextStrategy } from '../../types.js'
 import type { HideConditions } from './base.js'
-import type { ToolSearchStrategy } from './tool-search.js'
+import type { ToolSearchStrategy } from './search/index.js'
 
 /**
  * Target for `Hide.toolSpecs` — which specs are candidates for hiding.
@@ -54,7 +54,7 @@ export type HideFailurePolicy = 'all' | 'none'
  * @internal
  */
 export interface HideToolSpecsConfig {
-  /** Ranks candidates by relevance to the latest user text. Defaults to `KeywordToolSearch`. */
+  /** Ranks candidates by relevance to the latest user text. Defaults to `KeywordToolSearchStrategy`. */
   search?: ToolSearchStrategy
   /**
    * How many candidates the model sees: the best matches, then unmatched candidates in catalog
@@ -151,7 +151,7 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     }
     this._target = target
     this._config = config ?? {}
-    this._search = config?.search ?? KeywordToolSearch
+    this._search = config?.search ?? KeywordToolSearchStrategy
     this._keep = config?.keep ?? DEFAULT_KEEP
     this._alwaysHide = new Set(config?.alwaysHide ?? [])
     this._onFailure = config?.onFailure ?? 'all'

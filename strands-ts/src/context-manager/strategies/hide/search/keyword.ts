@@ -1,57 +1,13 @@
 /**
- * Tool search — ranks in-memory tool specs by relevance to a query.
- *
- * Tool specs are a per-call projection of the registry, never stored, so this is a separate
- * contract from the storage package's `SearchStrategy`, which ranks keys held by a `Storage`.
- * The result shape mirrors `StorageSearchResult` with `name` in place of `key`.
+ * Keyword tool search: the default ranker for `Hide`, built on the storage tokenizer and stop
+ * words. No external dependencies.
  *
  * @internal
  */
 
-import { STOP_WORDS, tokenize } from '../../../storage/search/keyword.js'
-import type { ToolSpec } from '../../../tools/types.js'
-
-/**
- * A ranked match from a {@link ToolSearchStrategy}.
- *
- * @internal
- */
-export interface ToolSearchResult {
-  /** Name of the matched tool spec. */
-  name: string
-  /** Relevance score; higher is more relevant. */
-  score: number
-}
-
-/**
- * Options for a {@link ToolSearchStrategy} search.
- *
- * @internal
- */
-export interface ToolSearchOptions {
-  /** How many results the caller will use. When omitted, every ranked match is returned. */
-  limit?: number
-}
-
-/**
- * Ranks tool specs by relevance to a query. Implementations may be lexical, an LLM judge, or an
- * adapter over a persistent index; `Hide` keeps the first results that name a candidate, up to
- * the `limit` it passes.
- *
- * @internal
- */
-export interface ToolSearchStrategy {
-  /**
-   * Ranks `candidates` against `query`.
-   *
-   * @param query - `Hide`'s projection of the conversation; today the latest user text. Strategies
-   *   that need more context get it through a richer projection, not a wider signature.
-   * @param candidates - The specs eligible for selection, in catalog order
-   * @param options - Search options; `Hide` always passes `limit`
-   * @returns Matches ranked best-first, at most `options.limit` when given
-   */
-  search(query: string, candidates: readonly ToolSpec[], options?: ToolSearchOptions): Promise<ToolSearchResult[]>
-}
+import { STOP_WORDS, tokenize } from '../../../../storage/search/keyword.js'
+import type { ToolSpec } from '../../../../tools/types.js'
+import type { ToolSearchOptions, ToolSearchResult, ToolSearchStrategy } from './types.js'
 
 /**
  * Keyword tool search over the query's content terms. A term that appears in the tool name counts
@@ -64,7 +20,7 @@ export interface ToolSearchStrategy {
  *
  * @internal
  */
-export const KeywordToolSearch: ToolSearchStrategy = {
+export const KeywordToolSearchStrategy: ToolSearchStrategy = {
   async search(
     query: string,
     candidates: readonly ToolSpec[],
@@ -105,7 +61,7 @@ export function contentTerms(text: string): Set<string> {
 
 /**
  * Whether a content term of `query` appears in the tool's name, split and normalized the way
- * `KeywordToolSearch` splits names. Independent of the configured strategy, so a continuation
+ * `KeywordToolSearchStrategy` splits names. Independent of the configured strategy, so a continuation
  * turn can add the tool it literally names without paying for or depending on a ranking.
  *
  * @param query - Raw query text

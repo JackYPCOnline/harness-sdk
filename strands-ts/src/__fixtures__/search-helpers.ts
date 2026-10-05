@@ -1,4 +1,4 @@
-import type { ToolSearchStrategy } from '../context-manager/strategies/hide/tool-search.js'
+import type { ToolSearchStrategy } from '../context-manager/strategies/hide/search/index.js'
 
 /**
  * A tool search strategy that returns fixed names best-first, ignoring the query and candidates.
