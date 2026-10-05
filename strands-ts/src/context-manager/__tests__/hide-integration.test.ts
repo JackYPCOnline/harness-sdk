@@ -7,9 +7,11 @@ import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../tools/structured-output-tool.
 import { Hide } from '../strategies/hide/index.js'
 import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 import { createMockTool } from '../../__fixtures__/tool-helpers.js'
+import { tool } from '../../tools/tool-factory.js'
 import { createStaticToolSearch } from '../../__fixtures__/search-helpers.js'
-import { TextBlock, ToolUseBlock } from '../../types/messages.js'
+import { TextBlock, ToolResultBlock, ToolUseBlock } from '../../types/messages.js'
 import type { ToolSearchStrategy } from '../strategies/hide/index.js'
+import type { Tool } from '../../tools/tool.js'
 import type { Message } from '../../types/messages.js'
 import type { ModelStreamEvent } from '../../models/streaming.js'
 import type { StreamOptions } from '../../models/model.js'
@@ -24,7 +26,53 @@ class RecordingModel extends MockMessageModel {
   }
 }
 
+/** Tools across unrelated topics, so a `keep` well below the count hides most of them. */
+function topicCatalog(): Tool[] {
+  const make = (name: string, description: string, result: string): Tool =>
+    tool({ name, description, inputSchema: z.object({}).passthrough(), callback: () => result })
+  return [
+    make('search_invoices', 'Search invoices by customer', 'no invoices found'),
+    make('refund_invoice', 'Refund an invoice by id', 'refund issued'),
+    make('create_ticket', 'Create a support ticket', 'ticket created'),
+    make('send_email', 'Send an email to a customer', 'sent'),
+    make('track_package', 'Track a shipping package by tracking number', 'in transit'),
+    make('schedule_meeting', 'Schedule a calendar meeting', 'scheduled'),
+    make('translate_text', 'Translate text between languages', 'translated'),
+    make('convert_currency', 'Convert an amount between currencies', '42.00'),
+    make('get_weather', 'Current weather conditions for a city', 'Sunny, 24C'),
+    make('city_guide', 'Sightseeing tips for a city', 'Visit the museum'),
+  ]
+}
+
 describe('Hide through ContextManager', () => {
+  it('sends the model only the selected tools from a multi-topic catalog', async () => {
+    const model = new RecordingModel()
+      .addTurn(new ToolUseBlock({ name: 'get_weather', toolUseId: 'use-1', input: { city: 'Paris' } }))
+      .addTurn(new TextBlock('Sunny and 24C in Paris.'))
+    const agent = new Agent({
+      model,
+      tools: topicCatalog(),
+      systemPrompt: 'You are a travel assistant. Use tools when they help.',
+      printer: false,
+      contextManager: new ContextManager({ strategies: [Hide.toolSpecs({ keep: 3 })], stash: false }),
+    })
+
+    const result = await agent.invoke('What is the weather in Paris right now?')
+
+    // get_weather is the only keyword match; the budget is filled from catalog order.
+    expect(model.seenToolSpecs).toEqual([
+      ['search_invoices', 'refund_invoice', 'get_weather'],
+      ['search_invoices', 'refund_invoice', 'get_weather'],
+    ])
+    expect(result.stopReason).toBe('endTurn')
+    const toolResults = agent.messages.flatMap((message) =>
+      message.content.filter((block): block is ToolResultBlock => block instanceof ToolResultBlock)
+    )
+    expect(toolResults).toHaveLength(1)
+    expect(toolResults[0]!.toolUseId).toBe('use-1')
+    expect(agent.tools).toHaveLength(10)
+  })
+
   it('filters the specs the model receives and leaves the registry intact', async () => {
     const model = new RecordingModel().addTurn(new TextBlock('done'))
     const tools = ['alpha', 'beta', 'gamma'].map((name) => createMockTool(name, () => 'ok'))
