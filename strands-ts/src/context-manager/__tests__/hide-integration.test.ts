@@ -65,7 +65,7 @@ describe('Hide through ContextManager', () => {
     expect(model.seenToolSpecs).toEqual([['beta'], ['beta']])
   })
 
-  it('carries the selection into a follow-up invocation with no matches', async () => {
+  it('carries the selection into a continuation turn', async () => {
     const model = new RecordingModel().addTurn(new TextBlock('done')).addTurn(new TextBlock('done'))
     const tools = ['alpha', 'beta', 'gamma'].map((name) => createMockTool(name, () => 'ok'))
     const search: ToolSearchStrategy = {
@@ -85,6 +85,67 @@ describe('Hide through ContextManager', () => {
     await agent.invoke('thanks')
 
     expect(model.seenToolSpecs).toEqual([['beta'], ['beta']])
+  })
+
+  it('falls back on a new topic that matches nothing', async () => {
+    const model = new RecordingModel().addTurn(new TextBlock('done')).addTurn(new TextBlock('done'))
+    const tools = ['alpha', 'beta', 'gamma'].map((name) => createMockTool(name, () => 'ok'))
+    const search: ToolSearchStrategy = {
+      search: async (query) => (query === 'hello' ? [{ name: 'beta', score: 1 }] : []),
+    }
+    const agent = new Agent({
+      model,
+      tools,
+      printer: false,
+      contextManager: new ContextManager({
+        strategies: [Hide.toolSpecs('toolSpecs', { search, keep: 1 })],
+        stash: false,
+      }),
+    })
+
+    await agent.invoke('hello')
+    await agent.invoke('where is my package')
+
+    expect(model.seenToolSpecs).toEqual([['beta'], ['alpha', 'beta', 'gamma']])
+  })
+
+  it('passes the catalog through until count is met', async () => {
+    const model = new RecordingModel().addTurn(new TextBlock('done'))
+    const tools = ['alpha', 'beta', 'gamma'].map((name) => createMockTool(name, () => 'ok'))
+    const agent = new Agent({
+      model,
+      tools,
+      printer: false,
+      contextManager: new ContextManager({
+        strategies: [
+          Hide.toolSpecs('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 }).when({ count: 4 }),
+        ],
+        stash: false,
+      }),
+    })
+
+    await agent.invoke('hello')
+
+    expect(model.seenToolSpecs).toEqual([['alpha', 'beta', 'gamma']])
+  })
+
+  it('never ships an alwaysHide tool', async () => {
+    const model = new RecordingModel().addTurn(new TextBlock('done'))
+    const tools = ['alpha', 'beta', 'gamma'].map((name) => createMockTool(name, () => 'ok'))
+    const agent = new Agent({
+      model,
+      tools,
+      printer: false,
+      contextManager: new ContextManager({
+        strategies: [Hide.toolSpecs({ alwaysHide: ['gamma'] })],
+        stash: false,
+      }),
+    })
+
+    await agent.invoke('hello')
+
+    expect(model.seenToolSpecs).toEqual([['alpha', 'beta']])
+    expect(agent.tools.map((tool) => tool.name).sort()).toEqual(['alpha', 'beta', 'gamma'])
   })
 
   it('ships the same prefix on the forced structured-output call', async () => {

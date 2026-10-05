@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
-import { Hide, HideToolSpecsStrategy, KeywordToolSearch } from '../hide/index.js'
+import { Hide, KeywordToolSearch } from '../hide/index.js'
+import { HideToolSpecsStrategy } from '../hide/tool-specs.js'
+import { MANAGE_TOOL_NAME } from '../../../background-tasks/background-tasks.js'
+import { logger } from '../../../logging/logger.js'
 import { InvokeModelStage } from '../../../middleware/stages.js'
 import { AfterInvocationEvent, BeforeInvocationEvent } from '../../../hooks/events.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
@@ -10,7 +13,7 @@ import { createMockAgent, invokeTrackedHook } from '../../../__fixtures__/agent-
 import { createStaticToolSearch } from '../../../__fixtures__/search-helpers.js'
 import type { MockAgent } from '../../../__fixtures__/agent-helpers.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
-import type { ToolSearchStrategy } from '../hide/index.js'
+import type { HideToolSpecsConfig, ToolSearchStrategy } from '../hide/index.js'
 import type { ToolSpec } from '../../../tools/types.js'
 import type { InvocationState } from '../../../types/agent.js'
 
@@ -98,13 +101,21 @@ const catalog = [
   spec('ask_user', 'Ask the user a question'),
 ]
 
-const PROTECTED = [STRUCTURED_OUTPUT_TOOL_NAME, RETRIEVAL_TOOL_NAME, OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME]
+const PROTECTED = [
+  STRUCTURED_OUTPUT_TOOL_NAME,
+  RETRIEVAL_TOOL_NAME,
+  OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME,
+  MANAGE_TOOL_NAME,
+]
 const protectedSpecs = PROTECTED.map((name) => spec(name, 'Protected'))
 
 const names = (specs: readonly ToolSpec[]): string[] => specs.map((entry) => entry.name)
 
-const toolSpecs = (...args: Parameters<typeof Hide.toolSpecs>): HideToolSpecsStrategy =>
-  Hide.toolSpecs(...args) as HideToolSpecsStrategy
+const toolSpecs = (
+  target?: Parameters<typeof Hide.toolSpecs>[0],
+  config?: HideToolSpecsConfig
+): HideToolSpecsStrategy =>
+  (target === undefined ? Hide.toolSpecs(config) : Hide.toolSpecs(target as never, config)) as HideToolSpecsStrategy
 
 describe('Hide.toolSpecs', () => {
   describe('construction', () => {
@@ -158,6 +169,29 @@ describe('Hide.toolSpecs', () => {
 
     it('throws when a name is both a candidate and pinned', () => {
       expect(() => Hide.toolSpecs(['toolSpec::ask_user', '!toolSpec::ask_user'])).toThrow('both a candidate and pinned')
+    })
+
+    it('accepts a config-only call over every spec', async () => {
+      const search = createStaticToolSearch(['shipping_track'])
+      const { agent, handler } = attach(Hide.toolSpecs({ search, keep: 1 }) as HideToolSpecsStrategy)
+      const result = await handler(context(agent, catalog))
+      expect(names(result.toolSpecs)).toEqual(['shipping_track'])
+    })
+
+    it('throws for a target that is neither toolSpecs nor an array', () => {
+      expect(() => new HideToolSpecsStrategy('tools' as never)).toThrow("must be 'toolSpecs' or an array")
+    })
+
+    it('warns when count is at or below keep', () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+      Hide.toolSpecs({ keep: 5 }).when({ count: 5 })
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('count at or below keep'))
+      warn.mockRestore()
+    })
+
+    it('throws for an alwaysHide entry written in the target grammar', () => {
+      expect(() => Hide.toolSpecs({ alwaysHide: ['toolSpec::debug_dump'] })).toThrow('bare tool names')
+      expect(() => Hide.toolSpecs({ alwaysHide: ['!toolSpec::debug_dump'] })).toThrow('bare tool names')
     })
   })
 
@@ -465,7 +499,18 @@ describe('Hide.toolSpecs', () => {
   })
 
   describe('continuation turns', () => {
-    it('carries the previous view forward without ranking', async () => {
+    it('keeps the previous view when the acknowledgement names nothing', async () => {
+      const search = vi.fn(async (query: string) =>
+        query.includes('flight') ? [{ name: 'book_flight', score: 1 }] : []
+      )
+      const travel = [spec('book_flight', 'Book a flight'), spec('confirm_payment', 'Confirm a payment')]
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search: { search }, keep: 1 }))
+      await handler(context(agent, travel, { invocationState: {}, messages: [user('book the flight')] }))
+      const result = await handler(context(agent, travel, { invocationState: {}, messages: [user('yes, go ahead')] }))
+      expect(names(result.toolSpecs)).toEqual(['book_flight'])
+    })
+
+    it('never swaps the carried tool for one the acknowledgement names', async () => {
       const search = vi.fn(async (query: string) => [
         { name: query.includes('flight') ? 'book_flight' : 'confirm_payment', score: 1 },
       ])
@@ -473,8 +518,24 @@ describe('Hide.toolSpecs', () => {
       const { agent, handler } = attach(toolSpecs('toolSpecs', { search: { search }, keep: 1 }))
       await handler(context(agent, travel, { invocationState: {}, messages: [user('book the flight')] }))
       const result = await handler(context(agent, travel, { invocationState: {}, messages: [user('yes, confirm')] }))
-      expect(names(result.toolSpecs)).toEqual(['book_flight'])
-      expect(search).toHaveBeenCalledTimes(1)
+      expect(names(result.toolSpecs)).toEqual(['book_flight', 'confirm_payment'])
+    })
+
+    it('adds tools the acknowledgement names to the carried view', async () => {
+      const search = vi.fn(async (query: string) => {
+        if (query.includes('shoes')) return [{ name: 'search_products', score: 1 }]
+        if (query.includes('confirm')) return [{ name: 'confirm_order', score: 1 }]
+        return []
+      })
+      const checkout = [
+        spec('search_products', 'Search the catalog'),
+        spec('add_to_cart', 'Add an item to the cart'),
+        spec('confirm_order', 'Confirm and place the order'),
+      ]
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search: { search }, keep: 1 }))
+      await handler(context(agent, checkout, { invocationState: {}, messages: [user('search for red shoes')] }))
+      const result = await handler(context(agent, checkout, { invocationState: {}, messages: [user('confirm')] }))
+      expect(names(result.toolSpecs)).toEqual(['search_products', 'confirm_order'])
     })
 
     it('ranks an acknowledgement word when it comes with content words', async () => {

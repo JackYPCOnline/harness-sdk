@@ -674,6 +674,7 @@ expect(statusBlock.text).toContain('100,000') // not '1,00,000'
 import { createStaticToolSearch } from '../../__fixtures__/search-helpers.js'
 const strategy = Hide.toolSpecs('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 })
 ```
+
 ## Multi-Environment Testing
 
 The SDK is designed to work seamlessly in both Node.js and browser environments. Our test suite validates this by running tests in both environments using Vitest's browser mode with Playwright.

@@ -8,6 +8,7 @@
  * @internal
  */
 
+import { MANAGE_TOOL_NAME as BACKGROUND_TASK_TOOL_NAME } from '../../../background-tasks/background-tasks.js'
 import { logger } from '../../../logging/logger.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
 import { TextBlock } from '../../../types/messages.js'
@@ -39,7 +40,9 @@ export type HideToolSpecsTarget = 'toolSpecs' | string[]
  * selection to carry forward.
  *
  * - `"all"` — every candidate
- * - `"none"` — only pinned and protected tools
+ * - `"none"` — only pinned and protected tools. With nothing pinned, a call can carry no tool
+ *   specs at all; some providers reject that once the history contains tool use, so pin at
+ *   least one tool when choosing `"none"`.
  *
  * @internal
  */
@@ -54,15 +57,16 @@ export interface HideToolSpecsConfig {
   /** Ranks candidates by relevance to the latest user text. Defaults to `KeywordToolSearch`. */
   search?: ToolSearchStrategy
   /**
-   * How many candidates the model sees: the best matches first, then unmatched candidates in
-   * catalog order until the budget is met. A catalog that fits within the budget passes through.
-   * Pinned and protected tools are shown in addition, so the wire carries
+   * How many candidates the model sees: the best matches, then unmatched candidates in catalog
+   * order until the budget is met, all emitted in catalog order. A catalog that fits within the
+   * budget passes through. Pinned and protected tools are shown in addition, so the wire carries
    * `min(keep, candidates) + pinned + protected` specs on a ranked turn. Defaults to 10.
    */
   keep?: number
   /**
-   * Tool names the model never sees, regardless of search, `count`, or pinning. Tools that
-   * SDK-injected content tells the model to call are never hidden, even if listed here.
+   * Bare tool names the model never sees, regardless of search, `count`, or pinning. Tools that
+   * SDK-injected content tells the model to call are never hidden, nor is a tool that `toolChoice`
+   * forces by name, even if listed here.
    */
   alwaysHide?: readonly string[]
   /**
@@ -77,14 +81,16 @@ const TOOL_SPEC_PREFIX = 'toolSpec::'
 const TOOL_SPEC_WILDCARD = `${TOOL_SPEC_PREFIX}*`
 
 /**
- * Tools that SDK-injected content tells the model to call: the structured-output tool, and the
- * retrieval tools whose offload placeholders reference them. Never hidden. Third-party plugin
- * tools with the same property are pinned by the user with `!toolSpec::<name>`.
+ * Tools that SDK-injected content tells the model to call: the structured-output tool, the
+ * retrieval tools whose offload placeholders reference them, and the background-task tool whose
+ * synthetic tool uses report task completion. Never hidden. Third-party plugin tools with the
+ * same property are pinned by the user with `!toolSpec::<name>`.
  */
 const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
   STRUCTURED_OUTPUT_TOOL_NAME,
   RETRIEVAL_TOOL_NAME,
   OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME,
+  BACKGROUND_TASK_TOOL_NAME,
 ])
 
 /**
@@ -122,11 +128,24 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
 
   constructor(target: HideToolSpecsTarget, config?: HideToolSpecsConfig, conditions?: HideConditions) {
     super(conditions)
+    if (target !== 'toolSpecs' && !Array.isArray(target)) {
+      throw new Error(`Hide target must be 'toolSpecs' or an array of entries, got ${JSON.stringify(target)}`)
+    }
     if (Array.isArray(target) && target.length === 0) {
       throw new Error('Empty array target matches nothing — provide at least one target')
     }
     if (config?.keep !== undefined && (!Number.isInteger(config.keep) || config.keep < 1)) {
       throw new Error(`keep must be a positive integer, got ${config.keep}`)
+    }
+    for (const name of config?.alwaysHide ?? []) {
+      if (name.startsWith(TOOL_SPEC_PREFIX) || name.startsWith(`!${TOOL_SPEC_PREFIX}`)) {
+        throw new Error(`alwaysHide takes bare tool names, got '${name}'`)
+      }
+    }
+    if (this._count !== undefined && this._count <= (config?.keep ?? DEFAULT_KEEP)) {
+      logger.warn(
+        `count=<${this._count}>, keep=<${config?.keep ?? DEFAULT_KEEP}> | count at or below keep never fires, a catalog that fits within keep already passes through`
+      )
     }
     this._target = target
     this._config = config ?? {}
@@ -192,8 +211,10 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     visible: ToolSpec[]
   ): Promise<InvokeModelContext> {
     if (visible.length === catalog.length) return context
+    const visibleNames = new Set(visible.map((spec) => spec.name))
+    const hidden = catalog.filter((spec) => !visibleNames.has(spec.name)).map((spec) => spec.name)
     logger.debug(
-      `strategy=<${this.name}>, catalog=<${catalog.length}>, visible=<${visible.length}> | tool specs filtered`
+      `strategy=<${this.name}>, catalog=<${catalog.length}>, visible=<${visible.map((spec) => spec.name).join(',')}>, hidden=<${hidden.join(',')}> | tool specs filtered`
     )
     const projectedInputTokens = await this._correctProjection(context, catalog, visible)
     return {
@@ -205,10 +226,10 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
 
   /**
    * Select the names to show for this invocation and record them as what the agent's model last
-   * saw. A continuation turn ("yes, do it", "ok confirm") carries the previous view forward without
-   * ranking, so an acknowledgement that happens to share a word with a tool name cannot swap out
-   * the tool the model is mid-task with. Anything else is ranked; no matches, or a search failure,
-   * goes to `onFailure`.
+   * saw. A continuation turn ("yes, do it", "ok confirm") keeps the previous view and adds any tool
+   * its words name, so an acknowledgement can neither swap out the tool the model is mid-task with
+   * nor hide the one it asks for. Anything else is ranked; no matches, or a search failure, goes
+   * to `onFailure`.
    */
   private async _select(context: InvokeModelContext, eligible: readonly ToolSpec[]): Promise<ReadonlySet<string>> {
     const eligibleNames = new Set(eligible.map((spec) => spec.name))
@@ -218,8 +239,10 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     try {
       const carried = isContinuation(query) ? this._carryForward(context.agent, eligibleNames) : undefined
       if (carried) {
-        logger.debug(`strategy=<${this.name}> | continuation turn, carrying previous view forward`)
-        selected = carried
+        selected = new Set([...carried, ...(await this._matches(eligible, query))])
+        logger.debug(
+          `strategy=<${this.name}>, added=<${selected.size - carried.size}> | continuation turn, carrying previous view forward`
+        )
       } else {
         selected = await this._rank(eligible, query)
         if (selected.size === 0) {
@@ -237,15 +260,11 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
 
   /**
    * The best `keep` matches among the candidates, filled from unmatched candidates in catalog
-   * order when there are fewer matches than the budget. Empty when nothing matched.
+   * order when there are fewer matches than the budget. Empty when nothing matched. The fill is
+   * `Hide`'s budget semantics and applies whatever strategy produced the matches.
    */
   private async _rank(eligible: readonly ToolSpec[], query: string): Promise<Set<string>> {
-    const eligibleNames = new Set(eligible.map((spec) => spec.name))
-    const selected = new Set<string>()
-    for (const result of await this._search.search(query, eligible, this._keep)) {
-      if (selected.size >= this._keep) break
-      if (eligibleNames.has(result.name)) selected.add(result.name)
-    }
+    const selected = await this._matches(eligible, query)
     if (selected.size === 0) return selected
 
     for (const spec of eligible) {
@@ -253,6 +272,17 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
       selected.add(spec.name)
     }
     return selected
+  }
+
+  /** The strategy's matches that name a candidate, best-first, at most `keep`. */
+  private async _matches(eligible: readonly ToolSpec[], query: string): Promise<Set<string>> {
+    const eligibleNames = new Set(eligible.map((spec) => spec.name))
+    const matched = new Set<string>()
+    for (const result of await this._search.search(query, eligible, this._keep)) {
+      if (matched.size >= this._keep) break
+      if (eligibleNames.has(result.name)) matched.add(result.name)
+    }
+    return matched
   }
 
   private _fallback(eligibleNames: ReadonlySet<string>): ReadonlySet<string> {
@@ -268,10 +298,11 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
   }
 
   /**
-   * The loop projects input tokens against the full catalog before input middleware runs, but only
-   * on a cold start. Warm calls derive the projection from the previous call's actual usage, which
-   * already excluded hidden specs, so subtracting again would double-count. The recount uses the
-   * agent's model, as the loop does, rather than the model the call was routed to.
+   * Keeps `projectedInputTokens` honest for any input middleware that runs after this one. The
+   * loop projects against the full catalog before input middleware runs, but only on a cold start;
+   * warm calls derive the projection from the previous call's actual usage, which already excluded
+   * hidden specs, so subtracting again would double-count. The recount uses the agent's model, as
+   * the loop does, rather than the model the call was routed to.
    */
   private async _correctProjection(
     context: InvokeModelContext,
