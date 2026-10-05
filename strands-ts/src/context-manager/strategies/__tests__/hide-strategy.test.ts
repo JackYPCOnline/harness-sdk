@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Hide } from '../hide/index.js'
-import { HideToolSpecsStrategy } from '../hide/hide-tool-specs.js'
+import { ToolSelectionStrategy } from '../hide/tool-selection.js'
 import { MANAGE_TOOL_NAME } from '../../../background-tasks/background-tasks.js'
 import { logger } from '../../../logging/logger.js'
 import { InvokeModelStage } from '../../../middleware/stages.js'
@@ -20,7 +20,7 @@ import type { InvocationState } from '../../../types/agent.js'
 type InputHandler = (context: InvokeModelContext) => InvokeModelContext | Promise<InvokeModelContext>
 
 /** Attach a strategy to a mock agent and capture the Input handler it registers. */
-function attach(strategy: HideToolSpecsStrategy): { agent: MockAgent; handler: InputHandler } {
+function attach(strategy: ToolSelectionStrategy): { agent: MockAgent; handler: InputHandler } {
   let handler: InputHandler | undefined
   const agent = createMockAgent({
     extra: {
@@ -125,8 +125,8 @@ const names = (specs: readonly ToolSpec[]): string[] => specs.map((entry) => ent
 const toolSpecs = (
   target?: Parameters<typeof Hide.toolSpecs>[0],
   config?: HideToolSpecsConfig
-): HideToolSpecsStrategy =>
-  (target === undefined ? Hide.toolSpecs(config) : Hide.toolSpecs(target as never, config)) as HideToolSpecsStrategy
+): ToolSelectionStrategy =>
+  (target === undefined ? Hide.toolSpecs(config) : Hide.toolSpecs(target as never, config)) as ToolSelectionStrategy
 
 describe('Hide.toolSpecs', () => {
   describe('construction', () => {
@@ -151,7 +151,7 @@ describe('Hide.toolSpecs', () => {
       const search = createStaticToolSearch(['shipping_track'])
       const config = { search, keep: 1, alwaysHide: ['billing_search'], onFailure: 'none' as const }
       const gated = toolSpecs(['toolSpec::*', '!toolSpec::ask_user'], config).when({ count: 0 })
-      const { agent, handler } = attach(gated as HideToolSpecsStrategy)
+      const { agent, handler } = attach(gated as ToolSelectionStrategy)
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['shipping_track', 'ask_user'])
     })
@@ -184,13 +184,13 @@ describe('Hide.toolSpecs', () => {
 
     it('accepts a config-only call over every spec', async () => {
       const search = createStaticToolSearch(['shipping_track'])
-      const { agent, handler } = attach(Hide.toolSpecs({ search, keep: 1 }) as HideToolSpecsStrategy)
+      const { agent, handler } = attach(Hide.toolSpecs({ search, keep: 1 }) as ToolSelectionStrategy)
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual(['shipping_track'])
     })
 
     it('throws for a target that is neither toolSpecs nor an array', () => {
-      expect(() => new HideToolSpecsStrategy('tools' as never)).toThrow("must be 'toolSpecs' or an array")
+      expect(() => new ToolSelectionStrategy('tools' as never)).toThrow("must be 'toolSpecs' or an array")
     })
 
     it('warns when count is at or below keep', () => {
@@ -374,7 +374,7 @@ describe('Hide.toolSpecs', () => {
 
     it('applies even when count is not met', async () => {
       const strategy = toolSpecs('toolSpecs', { keep: 1, alwaysHide: ['ask_user'] }).when({ count: 20 })
-      const { agent, handler } = attach(strategy as HideToolSpecsStrategy)
+      const { agent, handler } = attach(strategy as ToolSelectionStrategy)
       const model = countingModel(25)
       const result = await handler({ ...context(agent, catalog, { model }), projectedInputTokens: 1000 })
       expect(names(result.toolSpecs)).toEqual([
@@ -388,7 +388,7 @@ describe('Hide.toolSpecs', () => {
 
     it('does not count toward the count gate', async () => {
       const strategy = toolSpecs('toolSpecs', { keep: 1, alwaysHide: ['ask_user'] }).when({ count: 5 })
-      const { agent, handler } = attach(strategy as HideToolSpecsStrategy)
+      const { agent, handler } = attach(strategy as ToolSelectionStrategy)
       const result = await handler(context(agent, catalog))
       expect(names(result.toolSpecs)).toEqual([
         'billing_search',
@@ -489,7 +489,7 @@ describe('Hide.toolSpecs', () => {
   describe('bypass', () => {
     it('passes the catalog through when count is not met', async () => {
       const { agent, handler } = attach(
-        toolSpecs('toolSpecs', { keep: 1 }).when({ count: 20 }) as HideToolSpecsStrategy
+        toolSpecs('toolSpecs', { keep: 1 }).when({ count: 20 }) as ToolSelectionStrategy
       )
       const input = context(agent, catalog)
       const result = await handler(input)
@@ -497,7 +497,7 @@ describe('Hide.toolSpecs', () => {
     })
 
     it('keeps passing through when the catalog grows past count mid-invocation', async () => {
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1 }).when({ count: 5 }) as HideToolSpecsStrategy)
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { keep: 1 }).when({ count: 5 }) as ToolSelectionStrategy)
       const invocationState: InvocationState = {}
       const small = catalog.slice(0, 4)
       await handler(context(agent, small, { invocationState }))
@@ -517,7 +517,7 @@ describe('Hide.toolSpecs', () => {
 
     it('counts eligible specs, not the whole catalog', async () => {
       const strategy = toolSpecs(['toolSpec::*', '!toolSpec::ask_user'], { keep: 1 }).when({ count: 5 })
-      const { agent, handler } = attach(strategy as HideToolSpecsStrategy)
+      const { agent, handler } = attach(strategy as ToolSelectionStrategy)
       const input = context(agent, catalog)
       const result = await handler(input)
       expect(result).toBe(input)
@@ -642,7 +642,7 @@ describe('Hide.toolSpecs', () => {
         search: async (query) => (query === 'billing' ? [{ name: 'billing_search', score: 1 }] : []),
       }
       const strategy = toolSpecs('toolSpecs', { search, keep: 1, onFailure: 'none' }).when({ count: 5 })
-      const { agent, handler } = attach(strategy as HideToolSpecsStrategy)
+      const { agent, handler } = attach(strategy as ToolSelectionStrategy)
       await handler(context(agent, catalog.slice(0, 4), { invocationState: {}, messages: [user('billing')] }))
       const result = await handler(
         context(agent, catalog, { invocationState: {}, messages: followUp('billing', 'ok thanks') })
