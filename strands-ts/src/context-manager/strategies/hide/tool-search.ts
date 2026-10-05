@@ -33,7 +33,8 @@ export interface ToolSearchStrategy {
   /**
    * Ranks `candidates` against `query`.
    *
-   * @param query - The latest user text
+   * @param query - `Hide`'s projection of the conversation; today the latest user text. Strategies
+   *   that need more context get it through a richer projection, not a wider signature.
    * @param candidates - The specs eligible for selection, in catalog order
    * @param limit - How many results the caller will use
    * @returns Matches ranked best-first, at most `limit`
