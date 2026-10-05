@@ -7,11 +7,11 @@
  */
 
 import type { HideStrategyBuilder } from './base.js'
-import type { HideToolSpecsConfig, HideToolSpecsTarget } from './tool-selection.js'
-import { ToolSelectionStrategy } from './tool-selection.js'
+import type { HideToolSpecsConfig, HideToolSpecsTarget } from './tool-specs.js'
+import { HideToolSpecsStrategy } from './tool-specs.js'
 
 export type { HideConditions, HideStrategyBuilder } from './base.js'
-export type { HideFailurePolicy, HideToolSpecsConfig, HideToolSpecsTarget } from './tool-selection.js'
+export type { HideFailurePolicy, HideToolSpecsConfig, HideToolSpecsTarget } from './tool-specs.js'
 export type { ToolSearchOptions, ToolSearchResult, ToolSearchStrategy } from './search/index.js'
 export { KeywordToolSearchStrategy } from './search/index.js'
 
@@ -52,8 +52,8 @@ export const Hide: HideNamespace = {
     config?: HideToolSpecsConfig
   ): HideStrategyBuilder {
     if (typeof targetOrConfig === 'object' && !Array.isArray(targetOrConfig)) {
-      return new ToolSelectionStrategy('toolSpecs', targetOrConfig)
+      return new HideToolSpecsStrategy('toolSpecs', targetOrConfig)
     }
-    return new ToolSelectionStrategy(targetOrConfig, config)
+    return new HideToolSpecsStrategy(targetOrConfig, config)
   },
 }

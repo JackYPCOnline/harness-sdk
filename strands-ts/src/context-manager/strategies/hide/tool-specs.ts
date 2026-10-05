@@ -1,5 +1,5 @@
 /**
- * Tool selection — decides which tool specs the model sees on each call of an invocation.
+ * Hide tool specs — decides which tool specs the model sees on each call of an invocation.
  *
  * Tool specs are a per-call projection of the tool registry, rebuilt for every model call and
  * carried on `InvokeModelContext.toolSpecs`. The registry is never touched: a hidden spec is
@@ -110,7 +110,7 @@ interface ToolSpecsState {
  *
  * @internal
  */
-export class ToolSelectionStrategy extends BaseHideStrategy<ToolSpecsState> {
+export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
   readonly name = 'hide:toolSpecs'
 
   private readonly _target: HideToolSpecsTarget
@@ -160,7 +160,7 @@ export class ToolSelectionStrategy extends BaseHideStrategy<ToolSpecsState> {
   }
 
   when(conditions: HideConditions): ContextStrategy {
-    return new ToolSelectionStrategy(this._target, this._config, conditions)
+    return new HideToolSpecsStrategy(this._target, this._config, conditions)
   }
 
   /**
