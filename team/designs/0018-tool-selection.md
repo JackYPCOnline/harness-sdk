@@ -174,7 +174,7 @@ class Hide:
     def tool_specs(
         target: str | Sequence[str] = "tool_specs",   # or ["tool_spec::*", "tool_spec::name", "!tool_spec::name"]
         *,
-        search: ToolSearchStrategy | None = None,     # KeywordToolSearch when omitted
+        search: ToolSearchStrategy | None = None,     # KeywordToolSearchStrategy when omitted
         keep: int = 10,
         always_hide: Sequence[str] = (),
         on_failure: Literal["all", "none"] = "all",
