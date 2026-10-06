@@ -10,7 +10,7 @@
  */
 
 import { logger } from '../../../logging/logger.js'
-import { TextBlock } from '../../../types/messages.js'
+import { TextBlock, ToolUseBlock } from '../../../types/messages.js'
 import { BaseHideStrategy, PROTECTED_TOOLS, isTargetEntry } from './base.js'
 import { KeywordToolSearchStrategy, contentTerms, namesTool } from './search/keyword.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
@@ -91,8 +91,10 @@ export class HideDropStrategy extends BaseHideStrategy<DropState> {
   private readonly _alwaysHide: ReadonlySet<string>
   private readonly _onFailure: HideFailurePolicy
   /**
-   * The candidates each agent's model last saw, carried forward on a continuation turn. Keyed by
-   * agent alone: carry-forward assumes sequential invocations, as ContextManager does.
+   * The candidates each agent's model last saw, carried forward on a continuation turn. An
+   * in-memory fast path: a restored agent has none, and `_carryForward` falls back to the tools
+   * the history shows the model used. Keyed by agent alone: carry-forward assumes sequential
+   * invocations, as ContextManager does.
    */
   private readonly _previous = new WeakMap<LocalAgent, ReadonlySet<string>>()
 
@@ -105,6 +107,7 @@ export class HideDropStrategy extends BaseHideStrategy<DropState> {
     for (const name of config?.alwaysHide ?? []) {
       if (isTargetEntry(name)) throw new Error(`alwaysHide takes bare tool names, got '${name}'`)
       if (this._pinned.has(name)) throw new Error(`'${name}' is both pinned and in alwaysHide`)
+      if (PROTECTED_TOOLS.has(name)) logger.warn(`tool=<${name}> | alwaysHide names a protected tool, it stays visible`)
     }
     if (this._count !== undefined && this._count <= keep) {
       logger.warn(
@@ -204,7 +207,9 @@ export class HideDropStrategy extends BaseHideStrategy<DropState> {
     let selected: ReadonlySet<string>
     try {
       const carried =
-        isContinuation(query) && hasPriorTurn(history) ? this._carryForward(context.agent, candidateNames) : undefined
+        isContinuation(query) && hasPriorTurn(history)
+          ? this._carryForward(context.agent, history, candidateNames)
+          : undefined
       if (carried) {
         const named = candidates.filter((spec) => namesTool(query, spec)).map((spec) => spec.name)
         selected = new Set([...carried, ...named])
@@ -251,10 +256,17 @@ export class HideDropStrategy extends BaseHideStrategy<DropState> {
     return this._onFailure === 'all' ? candidateNames : new Set()
   }
 
-  /** The agent's previous selection, intersected with the current candidates; undefined if nothing survives. */
-  private _carryForward(agent: LocalAgent, candidateNames: ReadonlySet<string>): ReadonlySet<string> | undefined {
-    const previous = this._previous.get(agent)
-    if (previous === undefined) return undefined
+  /**
+   * The agent's previous view, intersected with the current candidates; undefined if nothing
+   * survives. With no in-memory view (a restored agent), the tools the last assistant turns called
+   * stand in for it: those are durable, and they are what the model demonstrably saw and used.
+   */
+  private _carryForward(
+    agent: LocalAgent,
+    history: readonly Message[],
+    candidateNames: ReadonlySet<string>
+  ): ReadonlySet<string> | undefined {
+    const previous = this._previous.get(agent) ?? toolsUsedInLastTurn(history)
     const carried = new Set([...previous].filter((name) => candidateNames.has(name)))
     return carried.size > 0 ? carried : undefined
   }
@@ -291,7 +303,8 @@ export class HideDropStrategy extends BaseHideStrategy<DropState> {
 /**
  * Latest user text is the query; tool-result-only user turns are skipped. A newest turn with no
  * text at all (image-only input) is ranked against the user's previous text rather than treated
- * as a continuation.
+ * as a continuation. If an `Offload` strategy targets `userText`, the latest user text may already
+ * be its placeholder, and the turn ranks against that.
  */
 function queryFromMessages(messages: readonly Message[]): string {
   for (let index = messages.length - 1; index >= 0; index--) {
@@ -310,6 +323,19 @@ function queryFromMessages(messages: readonly Message[]): string {
 /** True when the history holds an assistant turn, so there is a previous view worth carrying. */
 function hasPriorTurn(messages: readonly Message[]): boolean {
   return messages.some((message) => message.role === 'assistant')
+}
+
+/** Names of the tools the assistant called since the previous user text turn. */
+function toolsUsedInLastTurn(messages: readonly Message[]): ReadonlySet<string> {
+  const names = new Set<string>()
+  for (let index = messages.length - 2; index >= 0; index--) {
+    const message = messages[index]!
+    if (message.role === 'user' && message.content.some((block) => block instanceof TextBlock)) break
+    for (const block of message.content) {
+      if (block instanceof ToolUseBlock) names.add(block.name)
+    }
+  }
+  return names
 }
 
 /** True once an assistant message carries usage; the loop then projects from that baseline. */

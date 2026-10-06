@@ -32,6 +32,10 @@ interface HideNamespace {
  *
  * @example
  * ```typescript
+ * // Alongside the message presets; a strategies list replaces the ContextManager defaults
+ * new ContextManager({
+ *   strategies: ['largeToolOffloading', 'overflowProtection', Hide.drop('toolSpecs').when({ count: 20 })],
+ * })
  * // Keep the 10 most relevant specs once the catalog has 20 or more
  * Hide.drop('toolSpecs').when({ count: 20 })
  * // Same, keeping 5

@@ -8,7 +8,7 @@ import { AfterInvocationEvent, BeforeInvocationEvent } from '../../../hooks/even
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
 import { RETRIEVAL_TOOL_NAME as OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
-import { Message, TextBlock, ToolResultBlock } from '../../../types/messages.js'
+import { Message, TextBlock, ToolResultBlock, ToolUseBlock } from '../../../types/messages.js'
 import { createMockAgent, invokeTrackedHook } from '../../../__fixtures__/agent-helpers.js'
 import type { MockAgent } from '../../../__fixtures__/agent-helpers.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
@@ -185,6 +185,13 @@ describe('Hide.drop', () => {
 
     it('throws for a target that is neither toolSpecs nor an array', () => {
       expect(() => new HideDropStrategy('tools' as never)).toThrow("must be 'toolSpecs' or an array")
+    })
+
+    it('warns when alwaysHide names a protected tool', () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+      Hide.drop('toolSpecs', { alwaysHide: [RETRIEVAL_TOOL_NAME] })
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('protected tool'))
+      warn.mockRestore()
     })
 
     it('warns when count is at or below keep', () => {
@@ -542,6 +549,33 @@ describe('Hide.drop', () => {
       )
       expect(names(result.toolSpecs)).toEqual(['book_flight', 'confirm_payment'])
       expect(search).toHaveBeenCalledTimes(1)
+    })
+
+    it('carries the tools the history shows were used when there is no in-memory view', async () => {
+      const search = spySearch([])
+      const { agent, handler } = attach(drop('toolSpecs', { search, keep: 1 }))
+      const restored = [
+        user('weather in paris'),
+        new Message({
+          role: 'assistant',
+          content: [new ToolUseBlock({ name: 'shipping_track', toolUseId: 'use-1', input: {} })],
+        }),
+        toolResultOnly(),
+        assistant('Shall I check?'),
+        user('yes please'),
+      ]
+      const result = await handler(context(agent, catalog, { invocationState: {}, messages: restored }))
+      expect(names(result.toolSpecs)).toEqual(['shipping_track'])
+      expect(search.search).not.toHaveBeenCalled()
+    })
+
+    it('ranks a restored acknowledgement when the last turn used no tools', async () => {
+      const search = spySearch([])
+      const { agent, handler } = attach(drop('toolSpecs', { search, keep: 1 }))
+      const restored = [user('weather in paris'), assistant('Shall I check?'), user('yes please')]
+      const result = await handler(context(agent, catalog, { invocationState: {}, messages: restored }))
+      expect(names(result.toolSpecs)).toEqual(names(catalog))
+      expect(search.search).toHaveBeenCalledTimes(1)
     })
 
     it('treats plural-form affirmations as continuations', async () => {
