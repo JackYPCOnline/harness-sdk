@@ -58,7 +58,7 @@ describe('Hide through ContextManager', () => {
       tools: topicCatalog(),
       systemPrompt: 'You are a travel assistant. Use tools when they help.',
       printer: false,
-      contextManager: new ContextManager({ strategies: [Hide.toolSpecs({ keep: 3 })], stash: false }),
+      contextManager: new ContextManager({ strategies: [Hide.drop('toolSpecs', { keep: 3 })], stash: false }),
     })
 
     const result = await agent.invoke('What is the weather in Paris right now?')
@@ -85,7 +85,7 @@ describe('Hide through ContextManager', () => {
       tools,
       printer: false,
       contextManager: new ContextManager({
-        strategies: [Hide.toolSpecs('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 })],
+        strategies: [Hide.drop('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 })],
         stash: false,
       }),
     })
@@ -107,7 +107,7 @@ describe('Hide through ContextManager', () => {
       tools,
       printer: false,
       contextManager: new ContextManager({
-        strategies: [Hide.toolSpecs('toolSpecs', { search, keep: 1 })],
+        strategies: [Hide.drop('toolSpecs', { search, keep: 1 })],
         stash: false,
       }),
     })
@@ -128,7 +128,7 @@ describe('Hide through ContextManager', () => {
       tools,
       printer: false,
       contextManager: new ContextManager({
-        strategies: [Hide.toolSpecs('toolSpecs', { search, keep: 1 })],
+        strategies: [Hide.drop('toolSpecs', { search, keep: 1 })],
         stash: false,
       }),
     })
@@ -150,7 +150,7 @@ describe('Hide through ContextManager', () => {
       tools,
       printer: false,
       contextManager: new ContextManager({
-        strategies: [Hide.toolSpecs('toolSpecs', { search, keep: 1 })],
+        strategies: [Hide.drop('toolSpecs', { search, keep: 1 })],
         stash: false,
       }),
     })
@@ -169,9 +169,7 @@ describe('Hide through ContextManager', () => {
       tools,
       printer: false,
       contextManager: new ContextManager({
-        strategies: [
-          Hide.toolSpecs('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 }).when({ count: 4 }),
-        ],
+        strategies: [Hide.drop('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 }).when({ count: 4 })],
         stash: false,
       }),
     })
@@ -189,7 +187,7 @@ describe('Hide through ContextManager', () => {
       tools,
       printer: false,
       contextManager: new ContextManager({
-        strategies: [Hide.toolSpecs({ alwaysHide: ['gamma'] })],
+        strategies: [Hide.drop('toolSpecs', { alwaysHide: ['gamma'] })],
         stash: false,
       }),
     })
@@ -211,7 +209,7 @@ describe('Hide through ContextManager', () => {
       printer: false,
       structuredOutputSchema: z.object({ name: z.string() }),
       contextManager: new ContextManager({
-        strategies: [Hide.toolSpecs('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 })],
+        strategies: [Hide.drop('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 })],
         stash: false,
       }),
     })
@@ -234,7 +232,7 @@ describe('Hide through ContextManager', () => {
       contextManager: new ContextManager({
         strategies: [
           'largeToolOffloading',
-          Hide.toolSpecs('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 }),
+          Hide.drop('toolSpecs', { search: createStaticToolSearch(['beta']), keep: 1 }),
         ],
       }),
     })

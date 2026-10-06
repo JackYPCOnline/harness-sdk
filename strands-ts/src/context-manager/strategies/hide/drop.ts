@@ -1,42 +1,25 @@
 /**
- * Hide tool specs — decides which tool specs the model sees on each call of an invocation.
+ * Drop strategy — removes tool specs from the model call that are not relevant to the turn.
  *
  * Tool specs are a per-call projection of the tool registry, rebuilt for every model call and
- * carried on `InvokeModelContext.toolSpecs`. The registry is never touched: a hidden spec is
- * absent from one call's projection, and the next invocation recomputes the view.
+ * carried on `InvokeModelContext.toolSpecs`. Unlike `Offload.drop`, nothing durable changes and
+ * nothing is stashed: a dropped spec is absent from one call's projection, and the next
+ * invocation recomputes the view.
  *
  * @internal
  */
 
-import { MANAGE_TOOL_NAME as BACKGROUND_TASK_TOOL_NAME } from '../../../background-tasks/background-tasks.js'
 import { logger } from '../../../logging/logger.js'
-import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
 import { TextBlock } from '../../../types/messages.js'
-import { RETRIEVAL_TOOL_NAME as OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
-import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
-import { BaseHideStrategy } from './base.js'
+import { BaseHideStrategy, PROTECTED_TOOLS, isTargetEntry } from './base.js'
 import { KeywordToolSearchStrategy, contentTerms, namesTool } from './search/keyword.js'
 import type { InvokeModelContext } from '../../../middleware/stages.js'
 import type { ToolSpec } from '../../../tools/types.js'
 import type { LocalAgent } from '../../../types/agent.js'
 import type { Message } from '../../../types/messages.js'
 import type { ContextStrategy } from '../../types.js'
-import type { HideConditions } from './base.js'
+import type { HideConditions, HideTarget } from './base.js'
 import type { ToolSearchStrategy } from './search/index.js'
-
-/**
- * Target for `Hide.toolSpecs` — which specs are candidates for hiding.
- *
- * - `"toolSpecs"` — every tool spec on the call
- * - `string[]` — `toolSpec::*` (every spec) or `toolSpec::<name>` entries name the candidates;
- *   a `!toolSpec::<name>` entry is pinned: always visible, never a candidate, and outside the `keep` budget
- *
- * Pin any plugin tool the model is told to call by injected prompt text (for `AgentSkills`,
- * `'!toolSpec::skills'`), since a hidden spec cannot be called.
- *
- * @internal
- */
-export type HideToolSpecsTarget = 'toolSpecs' | string[]
 
 /**
  * What the model sees when search fails or returns no usable match and there is no previous
@@ -52,11 +35,11 @@ export type HideToolSpecsTarget = 'toolSpecs' | string[]
 export type HideFailurePolicy = 'all' | 'none'
 
 /**
- * Configuration for `Hide.toolSpecs`.
+ * Configuration for `Hide.drop`.
  *
  * @internal
  */
-export interface HideToolSpecsConfig {
+export interface HideDropConfig {
   /** Ranks candidates by relevance to the latest user text. Defaults to `KeywordToolSearchStrategy`. */
   search?: ToolSearchStrategy
   /**
@@ -81,30 +64,12 @@ export interface HideToolSpecsConfig {
 }
 
 const DEFAULT_KEEP = 10
-const TOOL_SPEC_PREFIX = 'toolSpec::'
-const TOOL_SPEC_WILDCARD = `${TOOL_SPEC_PREFIX}*`
-
-/**
- * Tools that SDK-injected content tells the model to call: the structured-output tool, the
- * retrieval tools whose offload placeholders reference them, and the background-task tool whose
- * synthetic tool uses report task completion. Never hidden.
- *
- * Plugin tools with the same property that are not listed here, such as the `skills` tool whose
- * `available_skills` prompt section `AgentSkills` injects, are pinned by the user with
- * `!toolSpec::<name>`; opting into selection means owning which plugin tools stay visible.
- */
-const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
-  STRUCTURED_OUTPUT_TOOL_NAME,
-  RETRIEVAL_TOOL_NAME,
-  OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME,
-  BACKGROUND_TASK_TOOL_NAME,
-])
 
 /**
  * The decision for one invocation, made on its first model call and reused on every later one.
  * Specs that join the catalog later in the invocation were never ranked and stay visible.
  */
-interface ToolSpecsState {
+interface DropState {
   /** Names to show among the candidates; undefined when the catalog passes through. */
   selected: ReadonlySet<string> | undefined
   /** The candidate names at decision time. */
@@ -112,65 +77,49 @@ interface ToolSpecsState {
 }
 
 /**
- * The strategy behind `Hide.toolSpecs`. Selects once per invocation and reuses the selection
- * through the tool loop, so a stable selection is a byte-identical tool prefix from call to call.
+ * Selects once per invocation and reuses the selection through the tool loop, so a stable
+ * selection is a byte-identical tool prefix from call to call.
  *
  * @internal
  */
-export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
-  readonly name = 'hide:toolSpecs'
+export class HideDropStrategy extends BaseHideStrategy<DropState> {
+  readonly name = 'hide:drop'
 
-  private readonly _target: HideToolSpecsTarget
-  private readonly _config: HideToolSpecsConfig
+  private readonly _config: HideDropConfig
   private readonly _search: ToolSearchStrategy
   private readonly _keep: number
   private readonly _alwaysHide: ReadonlySet<string>
   private readonly _onFailure: HideFailurePolicy
-  /** Candidate names from `toolSpec::<name>` entries; undefined means every spec is a candidate. */
-  private readonly _candidates: ReadonlySet<string> | undefined
-  /** Names from `!toolSpec::<name>` entries; always visible, never candidates. */
-  private readonly _pinned: ReadonlySet<string>
   /**
    * The candidates each agent's model last saw, carried forward on a continuation turn. Keyed by
    * agent alone: carry-forward assumes sequential invocations, as ContextManager does.
    */
   private readonly _previous = new WeakMap<LocalAgent, ReadonlySet<string>>()
 
-  constructor(target: HideToolSpecsTarget, config?: HideToolSpecsConfig, conditions?: HideConditions) {
-    super(conditions)
-    if (target !== 'toolSpecs' && !Array.isArray(target)) {
-      throw new Error(`Hide target must be 'toolSpecs' or an array of entries, got ${JSON.stringify(target)}`)
+  constructor(target: HideTarget, config?: HideDropConfig, conditions?: HideConditions) {
+    super(target, conditions)
+    const keep = config?.keep ?? DEFAULT_KEEP
+    if (!Number.isInteger(keep) || keep < 1) {
+      throw new Error(`keep must be a positive integer, got ${config?.keep}`)
     }
-    if (Array.isArray(target) && target.length === 0) {
-      throw new Error('Empty array target matches nothing — provide at least one target')
-    }
-    if (config?.keep !== undefined && (!Number.isInteger(config.keep) || config.keep < 1)) {
-      throw new Error(`keep must be a positive integer, got ${config.keep}`)
-    }
-    const { candidates, pinned } = resolveTarget(target)
     for (const name of config?.alwaysHide ?? []) {
-      if (name.startsWith(TOOL_SPEC_PREFIX) || name.startsWith(`!${TOOL_SPEC_PREFIX}`)) {
-        throw new Error(`alwaysHide takes bare tool names, got '${name}'`)
-      }
-      if (pinned.has(name)) throw new Error(`'${name}' is both pinned and in alwaysHide`)
+      if (isTargetEntry(name)) throw new Error(`alwaysHide takes bare tool names, got '${name}'`)
+      if (this._pinned.has(name)) throw new Error(`'${name}' is both pinned and in alwaysHide`)
     }
-    if (this._count !== undefined && this._count <= (config?.keep ?? DEFAULT_KEEP)) {
+    if (this._count !== undefined && this._count <= keep) {
       logger.warn(
-        `count=<${this._count}>, keep=<${config?.keep ?? DEFAULT_KEEP}> | count at or below keep never fires, a catalog that fits within keep already passes through`
+        `count=<${this._count}>, keep=<${keep}> | count at or below keep never fires, a catalog that fits within keep already passes through`
       )
     }
-    this._target = target
     this._config = config ?? {}
     this._search = config?.search ?? KeywordToolSearchStrategy
-    this._keep = config?.keep ?? DEFAULT_KEEP
+    this._keep = keep
     this._alwaysHide = new Set(config?.alwaysHide ?? [])
     this._onFailure = config?.onFailure ?? 'all'
-    this._candidates = candidates
-    this._pinned = pinned
   }
 
   when(conditions: HideConditions): ContextStrategy {
-    return new HideToolSpecsStrategy(this._target, this._config, conditions)
+    return new HideDropStrategy(this._target, this._config, conditions)
   }
 
   /**
@@ -191,7 +140,8 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
 
     const { selected, considered } = state
     const visible = shown.filter(
-      (spec) => spec.name === forced || !this._isEligible(spec) || !considered.has(spec.name) || selected.has(spec.name)
+      (spec) =>
+        spec.name === forced || !this._isCandidate(spec) || !considered.has(spec.name) || selected.has(spec.name)
     )
     return this._emit(context, catalog, visible)
   }
@@ -200,15 +150,15 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
    * Make the invocation's decision from the catalog on its first model call and store it. The
    * catalog passes through when `count` is not met or the candidates already fit within `keep`.
    */
-  private async _decide(context: InvokeModelContext, shown: readonly ToolSpec[]): Promise<ToolSpecsState> {
-    const eligible = shown.filter((spec) => this._isEligible(spec))
-    const considered = new Set(eligible.map((spec) => spec.name))
-    const gated = this._count !== undefined && eligible.length < this._count
+  private async _decide(context: InvokeModelContext, shown: readonly ToolSpec[]): Promise<DropState> {
+    const candidates = shown.filter((spec) => this._isCandidate(spec))
+    const considered = new Set(candidates.map((spec) => spec.name))
+    const gated = this._count !== undefined && candidates.length < this._count
     let selected: ReadonlySet<string> | undefined
-    if (gated || eligible.length <= this._keep) {
+    if (gated || candidates.length <= this._keep) {
       this._previous.set(context.agent, considered)
     } else {
-      selected = await this._select(context, eligible)
+      selected = await this._select(context, candidates)
     }
     const state = { selected, considered }
     this._setState(context.agent, context.invocationState, state)
@@ -243,8 +193,8 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
    * description does not grow the prefix. Anything else is ranked; no matches, or a search
    * failure, goes to `onFailure`.
    */
-  private async _select(context: InvokeModelContext, eligible: readonly ToolSpec[]): Promise<ReadonlySet<string>> {
-    const eligibleNames = new Set(eligible.map((spec) => spec.name))
+  private async _select(context: InvokeModelContext, candidates: readonly ToolSpec[]): Promise<ReadonlySet<string>> {
+    const candidateNames = new Set(candidates.map((spec) => spec.name))
     // The durable history, not the per-call projection: earlier input middleware (memory,
     // context injection) folds text into the projection's last user message, and that text is
     // not what the user asked for.
@@ -254,23 +204,23 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
     let selected: ReadonlySet<string>
     try {
       const carried =
-        isContinuation(query) && hasPriorTurn(history) ? this._carryForward(context.agent, eligibleNames) : undefined
+        isContinuation(query) && hasPriorTurn(history) ? this._carryForward(context.agent, candidateNames) : undefined
       if (carried) {
-        const named = eligible.filter((spec) => namesTool(query, spec)).map((spec) => spec.name)
+        const named = candidates.filter((spec) => namesTool(query, spec)).map((spec) => spec.name)
         selected = new Set([...carried, ...named])
         logger.debug(
           `strategy=<${this.name}>, added=<${named.join(',')}> | continuation turn, carrying previous view forward`
         )
       } else {
-        selected = await this._rank(eligible, query)
+        selected = await this._rank(candidates, query)
         if (selected.size === 0) {
           logger.debug(`strategy=<${this.name}>, onFailure=<${this._onFailure}> | no matches`)
-          selected = this._fallback(eligibleNames)
+          selected = this._fallback(candidateNames)
         }
       }
     } catch (error) {
       logger.warn(`strategy=<${this.name}>, onFailure=<${this._onFailure}>, error=<${error}> | search failed`)
-      selected = this._fallback(eligibleNames)
+      selected = this._fallback(candidateNames)
     }
     this._previous.set(context.agent, selected)
     return selected
@@ -281,31 +231,31 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
    * order when there are fewer matches than the budget. Empty when nothing matched. The fill is
    * `Hide`'s budget semantics and applies whatever strategy produced the matches.
    */
-  private async _rank(eligible: readonly ToolSpec[], query: string): Promise<Set<string>> {
-    const eligibleNames = new Set(eligible.map((spec) => spec.name))
+  private async _rank(candidates: readonly ToolSpec[], query: string): Promise<Set<string>> {
+    const candidateNames = new Set(candidates.map((spec) => spec.name))
     const selected = new Set<string>()
-    for (const result of await this._search.search(query, eligible, { limit: this._keep })) {
+    for (const result of await this._search.search(query, candidates, { limit: this._keep })) {
       if (selected.size >= this._keep) break
-      if (eligibleNames.has(result.name)) selected.add(result.name)
+      if (candidateNames.has(result.name)) selected.add(result.name)
     }
     if (selected.size === 0) return selected
 
-    for (const spec of eligible) {
+    for (const spec of candidates) {
       if (selected.size >= this._keep) break
       selected.add(spec.name)
     }
     return selected
   }
 
-  private _fallback(eligibleNames: ReadonlySet<string>): ReadonlySet<string> {
-    return this._onFailure === 'all' ? eligibleNames : new Set()
+  private _fallback(candidateNames: ReadonlySet<string>): ReadonlySet<string> {
+    return this._onFailure === 'all' ? candidateNames : new Set()
   }
 
-  /** The agent's previous selection, intersected with what is eligible now; undefined if nothing survives. */
-  private _carryForward(agent: LocalAgent, eligibleNames: ReadonlySet<string>): ReadonlySet<string> | undefined {
+  /** The agent's previous selection, intersected with the current candidates; undefined if nothing survives. */
+  private _carryForward(agent: LocalAgent, candidateNames: ReadonlySet<string>): ReadonlySet<string> | undefined {
     const previous = this._previous.get(agent)
     if (previous === undefined) return undefined
-    const carried = new Set([...previous].filter((name) => eligibleNames.has(name)))
+    const carried = new Set([...previous].filter((name) => candidateNames.has(name)))
     return carried.size > 0 ? carried : undefined
   }
 
@@ -336,44 +286,6 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
       return context.projectedInputTokens
     }
   }
-
-  /** A candidate for hiding: in the target, not pinned, not a protected tool. */
-  private _isEligible(spec: ToolSpec): boolean {
-    if (PROTECTED_TOOLS.has(spec.name) || this._pinned.has(spec.name)) return false
-    return this._candidates === undefined || this._candidates.has(spec.name)
-  }
-}
-
-/**
- * Parses a target into candidate and pinned names. `toolSpec::*`, or no plain entries at all,
- * makes every spec a candidate.
- */
-function resolveTarget(target: HideToolSpecsTarget): {
-  candidates: ReadonlySet<string> | undefined
-  pinned: ReadonlySet<string>
-} {
-  const pinned = new Set<string>()
-  if (!Array.isArray(target)) return { candidates: undefined, pinned }
-
-  const candidates = new Set<string>()
-  let wildcard = false
-  for (const entry of target) {
-    const isPin = entry.startsWith('!')
-    const body = isPin ? entry.slice(1) : entry
-    const name = body.startsWith(TOOL_SPEC_PREFIX) ? body.slice(TOOL_SPEC_PREFIX.length) : ''
-    if (name.length === 0 || (isPin && name === '*')) {
-      throw new Error(
-        `Hide targets must be '${TOOL_SPEC_PREFIX}<name>', '${TOOL_SPEC_WILDCARD}', or '!${TOOL_SPEC_PREFIX}<name>', got '${entry}'`
-      )
-    }
-    if (isPin) pinned.add(name)
-    else if (name === '*') wildcard = true
-    else candidates.add(name)
-  }
-  for (const name of pinned) {
-    if (candidates.has(name)) throw new Error(`'${TOOL_SPEC_PREFIX}${name}' is both a candidate and pinned`)
-  }
-  return { candidates: wildcard || candidates.size === 0 ? undefined : candidates, pinned }
 }
 
 /**
@@ -404,6 +316,7 @@ function hasPriorTurn(messages: readonly Message[]): boolean {
 function hasUsageBaseline(messages: readonly Message[]): boolean {
   return messages.some((message) => message.role === 'assistant' && message.metadata?.usage !== undefined)
 }
+
 /**
  * A turn made only of function words and acknowledgements ("yes, do it", "ok thanks") continues
  * the previous topic. Anything else that fails to match is treated as new and goes to `onFailure`,

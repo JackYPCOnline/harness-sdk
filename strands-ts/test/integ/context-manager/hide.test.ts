@@ -58,7 +58,7 @@ for (const provider of [bedrock, anthropic]) {
         model,
         tools: catalog(),
         printer: false,
-        contextManager: new ContextManager({ strategies: [Hide.toolSpecs({ keep: 3 })], stash: false }),
+        contextManager: new ContextManager({ strategies: [Hide.drop('toolSpecs', { keep: 3 })], stash: false }),
       })
 
       const result = await agent.invoke('What is the weather in Paris right now? Use the get_weather tool.')
@@ -82,7 +82,7 @@ for (const provider of [bedrock, anthropic]) {
         model,
         tools: catalog(),
         printer: false,
-        contextManager: new ContextManager({ strategies: [Hide.toolSpecs({ keep: 1 })], stash: false }),
+        contextManager: new ContextManager({ strategies: [Hide.drop('toolSpecs', { keep: 1 })], stash: false }),
       })
 
       await agent.invoke('What is the weather in Paris right now? Use the get_weather tool.')
@@ -106,7 +106,7 @@ for (const provider of [bedrock, anthropic]) {
         tools: catalog(),
         printer: false,
         contextManager: new ContextManager({
-          strategies: [Hide.toolSpecs({ keep: 3, alwaysHide: ['get_weather'] })],
+          strategies: [Hide.drop('toolSpecs', { keep: 3, alwaysHide: ['get_weather'] })],
           stash: false,
         }),
       })
@@ -131,7 +131,7 @@ for (const provider of [bedrock, anthropic]) {
         tools: catalog(),
         printer: false,
         structuredOutputSchema: z.object({ city: z.string(), conditions: z.string() }),
-        contextManager: new ContextManager({ strategies: [Hide.toolSpecs({ keep: 2 })], stash: false }),
+        contextManager: new ContextManager({ strategies: [Hide.drop('toolSpecs', { keep: 2 })], stash: false }),
       })
 
       const result = await agent.invoke('What is the weather in Paris right now? Use the get_weather tool.')
@@ -154,7 +154,7 @@ for (const provider of [bedrock, anthropic]) {
         model,
         tools: catalog(),
         printer: false,
-        contextManager: new ContextManager({ strategies: [Hide.toolSpecs({ keep: 2 })], stash: false }),
+        contextManager: new ContextManager({ strategies: [Hide.drop('toolSpecs', { keep: 2 })], stash: false }),
       })
 
       await agent.invoke('What is the weather in Paris right now? Use the get_weather tool.')
@@ -177,7 +177,7 @@ for (const provider of [bedrock, anthropic]) {
         model,
         tools: catalog().slice(0, 4),
         printer: false,
-        contextManager: new ContextManager({ strategies: [Hide.toolSpecs({ keep: 10 })], stash: false }),
+        contextManager: new ContextManager({ strategies: [Hide.drop('toolSpecs', { keep: 10 })], stash: false }),
       })
 
       const result = await agent.invoke('Reply with the single word OK.')
