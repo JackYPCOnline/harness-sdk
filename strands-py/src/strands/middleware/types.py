@@ -32,12 +32,11 @@ class InterruptControlEvent(Protocol):
 class MiddlewareResult(Generic[TResult]):
     """Wrapper passed to and returned from Output phase handlers.
 
-    Wrapping the value (rather than handing back the raw result event) gives Output
-    handlers a stable surface to evolve — e.g. we may add aggregated metadata fields here
-    later without changing the handler signature.
+    The wrapper, rather than the bare result event, gives Output handlers a surface that can
+    grow fields without changing the handler signature.
 
     Attributes:
-        value: The stage's result — the last event from the chain (e.g. ``ModelStopReason``).
+        value: The stage's result, the last event from the chain (e.g. ``ModelStopReason``).
     """
 
     value: TResult
@@ -45,10 +44,10 @@ class MiddlewareResult(Generic[TResult]):
     def replace(self, *, value: TResult) -> MiddlewareResult[TResult]:
         """Return a copy with ``value`` replaced.
 
-        Convenience wrapper around ``dataclasses.replace`` so Output handlers don't need
-        to import it:
-
+        Example:
+            ```python
             return result.replace(value=transformed_event)
+            ```
         """
         return dataclasses.replace(self, value=value)
 
