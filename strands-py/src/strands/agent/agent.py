@@ -68,7 +68,7 @@ from ..interrupt import InterruptException, _InterruptState
 from ..interventions.handler import InterventionHandler
 from ..interventions.registry import InterventionRegistry
 from ..memory import MemoryManager, MemoryManagerConfig
-from ..middleware.registry import MiddlewareRegistry
+from ..middleware._registry import MiddlewareRegistry
 from ..middleware.stages import AgentStreamContext, AgentStreamStage
 from ..middleware.types import (
     MiddlewareHandler,
@@ -146,7 +146,7 @@ async def _link_cancel_signal(external: threading.Event, internal: threading.Eve
 # TypeVar for generic structured output
 T = TypeVar("T", bound=BaseModel)
 
-# TypeVars for the add_middleware overloads, binding a stage/phase token's generics to the handler.
+# Stage token generics bound by the add_middleware overloads.
 _MwContext = TypeVar("_MwContext")
 _MwResult = TypeVar("_MwResult")
 _MwEvent = TypeVar("_MwEvent")
@@ -1286,21 +1286,19 @@ class Agent(AgentBase, LocalAgent):
     def add_middleware(self, stage_or_phase: Any, handler: Any) -> None:
         """Register a middleware handler for a stage or one of its phases.
 
-        Middleware wraps a stage of the agent run and can transform inputs, transform results,
-        or wrap execution to retry, cache, short-circuit, or gate behind a human-in-the-loop
-        interrupt. Register against a stage token (e.g. ``InvokeModelStage``) for the Wrap phase,
-        or a phase sub-token (``InvokeModelStage.Input`` / ``.Output``) for a pure transform.
-
-        Regardless of registration order, handlers run Input -> Wrap -> Output -> terminal, and
-        the first registered is the outermost. Handlers cannot be removed once registered.
+        Middleware wraps a stage of the agent run (``InvokeModelStage``, ``ExecuteToolStage``) and
+        can transform its input, transform its result, or wrap execution to retry, cache,
+        short-circuit, or gate it behind a human-in-the-loop interrupt. Regardless of registration
+        order, handlers run Input -> Wrap -> Output, and within a phase the first registered is the
+        outermost. Handlers cannot be removed once registered.
 
         Args:
-            stage_or_phase: A stage token (Wrap phase) or a phase sub-token (``.Input`` /
-                ``.Output``) identifying where the handler runs.
-            handler: The handler to register. A Wrap handler is an async generator
-                ``(context, next_fn)`` that yields events; an Input handler is
-                ``(context) -> context`` (sync or async); an Output handler is
-                ``(MiddlewareResult) -> MiddlewareResult`` (sync or async).
+            stage_or_phase: A stage token for the Wrap phase, or one of its ``.Input`` / ``.Output``
+                sub-tokens.
+            handler: A Wrap handler is an async generator ``(context, next_fn)`` that yields events,
+                the last of which is the stage result. An Input handler is ``(context) -> context``
+                and an Output handler is ``(MiddlewareResult) -> MiddlewareResult``; both may be
+                sync or async.
 
         Example:
             ```python
@@ -1308,18 +1306,16 @@ class Agent(AgentBase, LocalAgent):
 
             agent = Agent()
 
-            # Wrap: full control over the model call.
             async def timing(context, next_fn):
                 async for event in next_fn(context):
                     yield event
 
             agent.add_middleware(InvokeModelStage, timing)
 
-            # Input: transform the context before the call.
-            def inject_prompt(context):
+            def be_concise(context):
                 return context.replace(system_prompt="Be concise.")
 
-            agent.add_middleware(InvokeModelStage.Input, inject_prompt)
+            agent.add_middleware(InvokeModelStage.Input, be_concise)
             ```
 
         Docs:

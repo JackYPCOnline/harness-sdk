@@ -28,7 +28,7 @@ def register(plugin: ContextInjector) -> tuple[Any, Any]:
     """Run the plugin's init_agent and return (agent, registered_handler)."""
     agent = make_agent()
     plugin.init_agent(agent)
-    call = agent._middleware_registry.add_middleware.call_args
+    call = agent.add_middleware.call_args
     return agent, call
 
 

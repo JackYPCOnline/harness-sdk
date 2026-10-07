@@ -116,7 +116,7 @@ class _BackgroundTasks(Plugin):
             manager_options["timeout"] = self._config["timeout"]
         self._manager = InProcessTaskManager(agent, execute_tool, on_task_updated=self._store_task, **manager_options)
 
-        agent._middleware_registry.add_middleware(InvokeModelStage.Input, self._transform_tool_specs)
+        agent.add_middleware(InvokeModelStage.Input, self._transform_tool_specs)
         agent.add_hook(self._before_model_call, BeforeModelCallEvent)
         agent.add_hook(self._after_invocation, AfterInvocationEvent)
         agent.add_hook(lambda event: self.load_state(), AgentInitializedEvent, order=HookOrder.SDK_LAST)

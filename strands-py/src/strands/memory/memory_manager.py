@@ -636,7 +636,7 @@ class MemoryManager(Plugin):
         if config is False:
             return
 
-        agent._middleware_registry.add_middleware(
+        agent.add_middleware(
             InvokeModelStage.Input,
             _create_injection_middleware(
                 lambda context: self._provide_memory_context(context.messages, config),

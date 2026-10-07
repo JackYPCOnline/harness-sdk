@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from dataclasses import replace
 from typing import Any
 
 import boto3
@@ -189,9 +188,9 @@ def _force_tool_once(agent: Agent, tool_name: str) -> None:
         if state["forced"]:
             return ctx
         state["forced"] = True
-        return replace(ctx, tool_choice={"tool": {"name": tool_name}})
+        return ctx.replace(tool_choice={"tool": {"name": tool_name}})
 
-    agent._middleware_registry.add_middleware(InvokeModelStage.Input, handler)
+    agent.add_middleware(InvokeModelStage.Input, handler)
 
 
 def _observe_model_input(agent: Agent) -> Callable[[], list[dict] | None]:
@@ -207,7 +206,7 @@ def _observe_model_input(agent: Agent) -> Callable[[], list[dict] | None]:
         captured["seen"] = ctx.messages
         return ctx
 
-    agent._middleware_registry.add_middleware(InvokeModelStage.Input, handler)
+    agent.add_middleware(InvokeModelStage.Input, handler)
     return lambda: captured["seen"]
 
 

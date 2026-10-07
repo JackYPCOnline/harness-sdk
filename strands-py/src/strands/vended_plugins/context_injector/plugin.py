@@ -94,7 +94,7 @@ class ContextInjector(Plugin):
 
     def init_agent(self, agent: Agent) -> None:
         """Register the injection middleware on the agent's ``InvokeModelStage`` input phase."""
-        agent._middleware_registry.add_middleware(
+        agent.add_middleware(
             InvokeModelStage.Input,
             _create_injection_middleware(self._render_content, trigger=self._trigger),
         )

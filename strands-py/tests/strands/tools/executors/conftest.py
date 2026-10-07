@@ -8,7 +8,7 @@ import strands
 from strands import Agent
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent, HookRegistry
 from strands.interrupt import _InterruptState
-from strands.middleware.registry import MiddlewareRegistry
+from strands.middleware._registry import MiddlewareRegistry
 from strands.tools.registry import ToolRegistry
 from strands.types.tools import ToolContext
 

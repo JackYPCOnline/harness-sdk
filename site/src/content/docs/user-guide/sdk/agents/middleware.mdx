@@ -4,7 +4,7 @@ description: "Intercept and transform model calls and tool execution with compos
 tags: [event-loop, tool-execution]
 sourceLinks:
   - path: strands-py/src/strands/middleware/stages.py
-  - path: strands-py/src/strands/middleware/registry.py
+  - path: strands-py/src/strands/middleware/_registry.py
   - path: strands-ts/src/middleware/stages.ts
   - path: strands-ts/src/middleware/registry.ts
 ---
@@ -15,8 +15,8 @@ tool execution, transform what comes back, or wrap the whole operation to retry 
 cache it, reroute it, or skip it entirely.
 
 Reach for middleware when you need to control the flow of a stage, and use
-[hooks](hooks.md) when you only want to observe it. Middleware is the right tool when you
-want to wrap a stage and decide whether, and how many times, it runs: retry on a
+[hooks](hooks.md) to observe and react to lifecycle events. Middleware is the right tool
+when you want to wrap a stage and decide whether, and how many times, it runs: retry on a
 throttle, serve a cached response, or hold a tool call for human approval.
 
 ## Stages and phases
@@ -129,8 +129,7 @@ from strands.middleware import InvokeModelStage
 agent = Agent()
 
 def log_stop_reason(result):
-    stop_reason, message, usage, metrics = result.value["stop"]
-    print(f"model stopped with reason {stop_reason}")
+    print(f"model stopped with reason {result.value.stop_reason}")
     return result
 
 agent.add_middleware(InvokeModelStage.Output, log_stop_reason)

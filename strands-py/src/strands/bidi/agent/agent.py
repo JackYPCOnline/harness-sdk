@@ -34,7 +34,7 @@ from ...hooks import (
 )
 from ...hooks.registry import TEvent
 from ...interrupt import _InterruptState
-from ...middleware.registry import MiddlewareRegistry
+from ...middleware._registry import MiddlewareRegistry
 from ...sandbox import Sandbox
 from ...sandbox.not_a_sandbox_local_environment import NotASandboxLocalEnvironment
 from ...storage import Storage

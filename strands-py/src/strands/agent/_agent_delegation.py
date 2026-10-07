@@ -114,7 +114,7 @@ class AgentDelegation(Plugin):
         agent.add_hook(self._on_after_tools, AfterToolsEvent, order=HookOrder.SDK_LAST)
         agent.add_hook(self._on_before_model_call, BeforeModelCallEvent)
 
-        agent._middleware_registry.add_middleware(ExecuteToolStage, self._handle_tool_execution)
+        agent.add_middleware(ExecuteToolStage, self._handle_tool_execution)
 
     # --- Hooks ---
 
@@ -221,7 +221,7 @@ class AgentDelegation(Plugin):
     async def _handle_tool_execution(
         self,
         context: ExecuteToolContext,
-        next_fn: MiddlewareNext,
+        next_fn: MiddlewareNext[ExecuteToolContext, TypedEvent],
     ) -> AsyncGenerator[TypedEvent, None]:
         """ExecuteToolStage middleware: enforce delegation constraints and unwrap events."""
         agent = cast("Agent", context.agent)

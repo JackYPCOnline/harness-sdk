@@ -36,7 +36,7 @@ def test_wrap_executes_around_full_stream(agent):
             yield event
         call_order.append("after")
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, middleware)
+    agent.add_middleware(AgentStreamStage, middleware)
     result = agent("Test prompt")
 
     assert call_order == ["before", "after"]
@@ -53,7 +53,7 @@ def test_wrap_receives_agent_stream_context(agent):
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, capture)
+    agent.add_middleware(AgentStreamStage, capture)
     agent("Test prompt")
 
     assert len(received) == 1
@@ -75,7 +75,7 @@ def test_context_invocation_state_shared_by_reference(agent):
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, capture)
+    agent.add_middleware(AgentStreamStage, capture)
     agent("Test prompt", invocation_state=caller_state)
 
     assert is_same_object
@@ -91,7 +91,7 @@ def test_wrap_short_circuits_entire_stream(agent):
         message = {"role": "assistant", "content": [{"text": "Short-circuited"}]}
         yield EventLoopStopEvent("end_turn", message, EventLoopMetrics(), {})
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, short_circuit)
+    agent.add_middleware(AgentStreamStage, short_circuit)
     result = agent("Test prompt")
 
     assert result.stop_reason == "end_turn"
@@ -114,8 +114,8 @@ def test_wrap_multiple_middleware_execute_in_registration_order(agent):
             yield event
         call_order.append("inner-after")
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, outer)
-    agent._middleware_registry.add_middleware(AgentStreamStage, inner)
+    agent.add_middleware(AgentStreamStage, outer)
+    agent.add_middleware(AgentStreamStage, inner)
     agent("Test prompt")
 
     assert call_order == ["outer-before", "inner-before", "inner-after", "outer-after"]
@@ -139,8 +139,8 @@ def test_wrap_can_filter_events(agent):
             yield event
 
     # observer (outer) sees events after drop_init_events (inner) removed them.
-    agent._middleware_registry.add_middleware(AgentStreamStage, observer)
-    agent._middleware_registry.add_middleware(AgentStreamStage, drop_init_events)
+    agent.add_middleware(AgentStreamStage, observer)
+    agent.add_middleware(AgentStreamStage, drop_init_events)
     result = agent("Test prompt")
 
     assert not saw_init
@@ -184,7 +184,7 @@ def test_wrap_buffers_content_across_a_multi_turn_pass():
             emitted_text.append(text_event["data"])
             yield text_event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, stream_final_turn_only)
+    agent.add_middleware(AgentStreamStage, stream_final_turn_only)
     result = agent("go")
 
     assert result.stop_reason == "end_turn"
@@ -204,7 +204,7 @@ def test_wrap_can_inject_trailing_event_after_stop(agent):
             yield event
         yield InitEventLoopEvent()  # trailing non-stop event after the result
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, inject_trailing)
+    agent.add_middleware(AgentStreamStage, inject_trailing)
     result = agent("Test prompt")
 
     assert result.stop_reason == "end_turn"
@@ -227,8 +227,8 @@ def test_wrap_can_suppress_all_events_except_result(agent):
             yield event
 
     # observer (outer) sees only what suppress_non_results (inner) let through.
-    agent._middleware_registry.add_middleware(AgentStreamStage, observer)
-    agent._middleware_registry.add_middleware(AgentStreamStage, suppress_non_results)
+    agent.add_middleware(AgentStreamStage, observer)
+    agent.add_middleware(AgentStreamStage, suppress_non_results)
     result = agent("Test prompt")
 
     assert all(isinstance(event, EventLoopStopEvent) for event in events)
@@ -243,7 +243,7 @@ def test_wrap_dropping_stop_event_raises_actionable_error(agent):
             if not isinstance(event, EventLoopStopEvent):
                 yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, drop_stop)
+    agent.add_middleware(AgentStreamStage, drop_stop)
 
     with pytest.raises(RuntimeError, match="no result event"):
         agent("Test prompt")
@@ -266,7 +266,7 @@ def test_input_transforms_context_reaches_event_loop(agent):
         marker_seen_by_model = event.invocation_state.get("marker") == "from_input"
 
     agent.hooks.add_callback(BeforeModelCallEvent, check_invocation_state)
-    agent._middleware_registry.add_middleware(AgentStreamStage.Input, inject_marker)
+    agent.add_middleware(AgentStreamStage.Input, inject_marker)
     agent("Test prompt")
 
     assert marker_seen_by_model
@@ -280,7 +280,7 @@ def test_messages_in_place_edit_reaches_history_but_replace_is_dropped(agent):
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, edit_in_place)
+    agent.add_middleware(AgentStreamStage, edit_in_place)
     agent("original")
 
     user_texts = [m["content"][0].get("text") for m in agent.messages if m["role"] == "user"]
@@ -295,7 +295,7 @@ def test_messages_in_place_edit_reaches_history_but_replace_is_dropped(agent):
         async for event in next_fn(modified):
             yield event
 
-    other._middleware_registry.add_middleware(AgentStreamStage, swap_list)
+    other.add_middleware(AgentStreamStage, swap_list)
     other("original")
 
     other_user_texts = [m["content"][0].get("text") for m in other.messages if m["role"] == "user"]
@@ -319,9 +319,9 @@ def test_phase_ordering_at_agent_level(agent):
         order.append("input")
         return context
 
-    agent._middleware_registry.add_middleware(AgentStreamStage.Output, output_handler)
-    agent._middleware_registry.add_middleware(AgentStreamStage, wrap_handler)
-    agent._middleware_registry.add_middleware(AgentStreamStage.Input, input_handler)
+    agent.add_middleware(AgentStreamStage.Output, output_handler)
+    agent.add_middleware(AgentStreamStage, wrap_handler)
+    agent.add_middleware(AgentStreamStage.Input, input_handler)
     agent("Test prompt")
 
     assert order == ["input", "wrap", "output"]
@@ -356,7 +356,7 @@ def test_other_stage_middleware_does_not_affect_agent_stream():
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(InvokeModelStage, invoke_model_mw)
+    agent.add_middleware(InvokeModelStage, invoke_model_mw)
     agent("test")
 
     assert not agent_stream_ran
@@ -373,7 +373,7 @@ def test_middleware_interrupt_halts_agent(agent):
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
     result = agent("Test")
 
     assert result.stop_reason == "interrupt"
@@ -391,7 +391,7 @@ def test_middleware_interrupt_does_not_call_model(agent):
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
     result = agent("Test")
 
     assert result.stop_reason == "interrupt"
@@ -405,7 +405,7 @@ def test_middleware_interrupt_id_uses_agent_stream_namespace(agent):
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
     result = agent("Test")
 
     assert result.interrupts[0].id.startswith("v1:middleware_agent_stream:")
@@ -419,7 +419,7 @@ def test_middleware_interrupt_registered_in_state(agent):
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
     result = agent("Test")
 
     assert result.stop_reason == "interrupt"
@@ -444,7 +444,7 @@ def test_middleware_gets_response_on_resume_and_continues():
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
 
     result = agent("Test")
     assert result.stop_reason == "interrupt"
@@ -468,7 +468,7 @@ def test_middleware_interrupt_with_preemptive_response_skips_interrupt(agent):
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
     result = agent("Test")
 
     assert result.stop_reason == "end_turn"
@@ -495,7 +495,7 @@ def test_resumed_interrupt_deactivates_state_after_completion():
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
 
     result = agent("Test")
     assert result.stop_reason == "interrupt"
@@ -533,7 +533,7 @@ def test_resumed_interrupt_can_proceed_into_a_tool_call():
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
 
     result = agent("go")
     assert result.stop_reason == "interrupt"
@@ -569,7 +569,7 @@ def test_resumed_interrupt_reads_response_after_a_tool_cycle_runs():
         post = context.interrupt("gate")
         reads.append(("post", post.response))
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
 
     result = agent("go")
     assert result.stop_reason == "interrupt"
@@ -607,7 +607,7 @@ def test_resumed_agent_stream_interrupt_then_tool_interrupt():
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
 
     # Pass 1: the agent-stream middleware interrupt halts the invocation.
     result = agent("go")
@@ -649,7 +649,7 @@ def test_cancel_during_agent_stream_interrupt_resume_clears_state():
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
 
     result = agent("Test")
     assert result.stop_reason == "interrupt"
@@ -684,7 +684,7 @@ def test_sequential_agent_stream_interrupts_across_passes():
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
 
     result = agent("go")
     assert result.stop_reason == "interrupt"
@@ -708,7 +708,7 @@ def test_interrupt_message_uses_last_message_when_messages_exist(agent):
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
     result = agent("Test")
 
     assert result.stop_reason == "interrupt"
@@ -737,7 +737,7 @@ def test_invocation_hooks_fire_outside_agent_stream_middleware(agent):
             yield event
         order.append("middleware-after")
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, middleware)
+    agent.add_middleware(AgentStreamStage, middleware)
     agent("Test prompt")
 
     assert order == ["before_invocation", "middleware-before", "middleware-after", "after_invocation"]
@@ -763,7 +763,7 @@ def test_after_invocation_hook_fires_when_middleware_short_circuits(agent):
         message = {"role": "assistant", "content": [{"text": "Short-circuited"}]}
         yield EventLoopStopEvent("end_turn", message, EventLoopMetrics(), {})
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, short_circuit)
+    agent.add_middleware(AgentStreamStage, short_circuit)
     agent("Test prompt")
 
     assert after_fired
@@ -783,7 +783,7 @@ def test_user_message_added_hook_fires_before_the_chain(agent):
             yield event
         order.append("middleware-after")
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, middleware)
+    agent.add_middleware(AgentStreamStage, middleware)
     agent("Test prompt")
 
     # The user message is added before the chain starts; the assistant message during it.
@@ -802,7 +802,7 @@ def test_user_message_added_hook_fires_even_when_middleware_short_circuits(agent
         message = {"role": "assistant", "content": [{"text": "Short-circuited"}]}
         yield EventLoopStopEvent("end_turn", message, EventLoopMetrics(), {})
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, short_circuit)
+    agent.add_middleware(AgentStreamStage, short_circuit)
     agent("Test prompt")
 
     assert added_roles == ["user"]
@@ -819,7 +819,7 @@ def test_context_replace_preserves_interrupt(agent):
         async for event in next_fn(modified):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, replace_then_interrupt)
+    agent.add_middleware(AgentStreamStage, replace_then_interrupt)
     result = agent("Test")
 
     assert result.stop_reason == "interrupt"
@@ -849,7 +849,7 @@ def test_tool_interrupt_surfaces_through_agent_stream_chain():
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, passthrough)
+    agent.add_middleware(AgentStreamStage, passthrough)
     result = agent("go")
 
     assert result.stop_reason == "interrupt"
@@ -891,7 +891,7 @@ def test_agent_stream_interrupt_reports_all_unanswered_interrupts():
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
 
     # Pass 1: tool raises two interrupts.
     result = agent("go")
@@ -934,7 +934,7 @@ def test_resumed_interrupt_is_not_re_asked_after_a_later_tool_interrupt():
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
 
     asked: list[str] = []
     result = agent("go")
@@ -972,7 +972,7 @@ def test_answered_interrupt_is_not_reused_by_a_later_invocation():
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
 
     first = agent("go")
     assert first.stop_reason == "interrupt"
@@ -997,7 +997,7 @@ def test_interrupt_after_the_pass_completes_raises():
             yield event
         context.interrupt("approve_output", reason="approve the reply?")
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, post_hoc_gate)
+    agent.add_middleware(AgentStreamStage, post_hoc_gate)
 
     exp_message = r"interrupt_name=<approve_output> \| agent-stream middleware interrupted after the pass"
     with pytest.raises(RuntimeError, match=exp_message):
@@ -1019,7 +1019,7 @@ def test_after_invocation_result_is_the_stop_event_when_a_trailing_event_follows
             yield event
         yield InitEventLoopEvent()
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, inject_trailing)
+    agent.add_middleware(AgentStreamStage, inject_trailing)
     agent.hooks.add_callback(AfterInvocationEvent, lambda event: results.append(event.result))
 
     agent("Test prompt")
@@ -1052,7 +1052,7 @@ def test_middleware_yielded_interrupt_stop_preserves_interrupt_state():
         async for event in next_fn(context):
             yield event
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
 
     result = agent("go")
     assert result.stop_reason == "interrupt"
@@ -1087,7 +1087,7 @@ def _charging_agent(gate, charges, **kwargs):
         callback_handler=None,
         **kwargs,
     )
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
     return agent
 
 
@@ -1215,7 +1215,7 @@ def test_interrupt_after_a_tool_interrupt_stop_is_allowed():
         if stopped_for_interrupt:
             context.interrupt("batch_approve", reason="approve the batch too?")
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, batch_gate)
+    agent.add_middleware(AgentStreamStage, batch_gate)
 
     first = agent("go")
     assert first.stop_reason == "interrupt"
@@ -1247,7 +1247,7 @@ def test_interrupt_after_the_pass_completes_on_a_resumed_pass_leaves_no_state():
         if mode == "after":
             context.interrupt("post_gate", reason="approve the output?")
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, gate)
+    agent.add_middleware(AgentStreamStage, gate)
 
     first = agent("go")
     assert first.stop_reason == "interrupt"
@@ -1334,7 +1334,7 @@ def test_interrupt_after_a_middleware_yielded_result_is_allowed():
         yield EventLoopStopEvent("end_turn", message, EventLoopMetrics(), {})
         context.interrupt("confirm_cached", reason="serve the cached answer?")
 
-    agent._middleware_registry.add_middleware(AgentStreamStage, cached_then_confirm)
+    agent.add_middleware(AgentStreamStage, cached_then_confirm)
 
     first = agent("what is 2+2?")
     assert first.stop_reason == "interrupt"

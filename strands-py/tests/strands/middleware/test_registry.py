@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from strands.interrupt import Interrupt, InterruptException
-from strands.middleware.registry import MiddlewareRegistry
+from strands.middleware._registry import MiddlewareRegistry
 from strands.middleware.types import MiddlewareResult, MiddlewareStage
 
 

@@ -206,7 +206,7 @@ class ModelRouter(Plugin):
         if agent._model_router is not self:
             raise ValueError("ModelRouter must be passed through Agent(model=...), not plugins=[...]")
 
-        agent._middleware_registry.add_middleware(InvokeModelStage.Input, self._selection_middleware())
+        agent.add_middleware(InvokeModelStage.Input, self._selection_middleware())
         # Fallback must see whether ModelRetryStrategy (DEFAULT) already claimed the retry.
         agent.hooks.add_callback(AfterModelCallEvent, self._on_model_result, order=HookOrder.MODEL_ROUTING)
         # One invocation_state dict can span several Before/After pairs, because Agent._run_loop

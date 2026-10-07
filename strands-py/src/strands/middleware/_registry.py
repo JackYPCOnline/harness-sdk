@@ -76,17 +76,10 @@ class MiddlewareRegistry:
     def _add_output(self, phase: MiddlewareOutputPhase[Any, Any, Any], handler: MiddlewareOutputHandler) -> None:
         stage = phase._stage
 
-        # Output handlers receive and return a MiddlewareResult wrapping the result event
-        # (the last event in the chain, e.g. ModelStopReason). The wrapper lets handlers
-        # carry metadata alongside the result without touching the streamed events. The
-        # registry wraps the result event before calling the handler and unwraps the
-        # returned wrapper back into the event stream, so the rest of the chain (and the
-        # event-loop integration) continues to see a plain result event.
-        #
-        # Control-flow events (those matching InterruptControlEvent) mean the stage halted
-        # mid-stream, so it has no result to transform. When one appears, forward it and any
-        # pending buffered event, then stop tracking a result: the Output handler must not run
-        # and no buffered non-result event may be mistaken for the result.
+        # The last event is the stage result: it is held back one step, handed to the handler wrapped
+        # in a MiddlewareResult, and the returned wrapper's value is yielded in its place. An interrupt
+        # event means the stage halted without a result, so the handler must not run and no buffered
+        # non-result event may be mistaken for the result.
         async def adapted(context: Any, next_fn: MiddlewareNext) -> AsyncGenerator[Any, None]:
             last_event = None
             interrupted = False

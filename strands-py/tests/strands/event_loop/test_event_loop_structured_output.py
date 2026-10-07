@@ -11,7 +11,7 @@ from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 
 from strands.event_loop.event_loop import event_loop_cycle, recurse_event_loop
-from strands.middleware.registry import MiddlewareRegistry
+from strands.middleware._registry import MiddlewareRegistry
 from strands.telemetry.metrics import EventLoopMetrics
 from strands.telemetry.tracer import Tracer
 from strands.tools.registry import ToolRegistry

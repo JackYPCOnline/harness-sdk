@@ -7,13 +7,10 @@ import threading
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from ..interrupt import _AGENT_STREAM_INTERRUPT_ID_PREFIX, Interrupt, InterruptException
 from .types import MiddlewareStage
-
-# Sentinel for replace(): distinguishes "field omitted" (keep current value) from an explicit None.
-_UNSET: Any = object()
 
 if TYPE_CHECKING:
     from ..interrupt import _InterruptState
@@ -22,6 +19,16 @@ if TYPE_CHECKING:
     from ..types.agent import LocalAgent
     from ..types.content import Messages, SystemPrompt
     from ..types.tools import AgentTool, ToolChoice, ToolSpec, ToolUse
+
+_UNSET: Any = object()
+"""Default for ``replace()`` keywords, so an explicit ``None`` still counts as a replacement."""
+
+_ContextT = TypeVar("_ContextT", "InvokeModelContext", "ExecuteToolContext")
+
+
+def _replace(context: _ContextT, **changes: Any) -> _ContextT:
+    """Copy ``context`` with every keyword that was actually passed replaced."""
+    return dataclasses.replace(context, **{name: value for name, value in changes.items() if value is not _UNSET})
 
 
 @dataclass
@@ -57,42 +64,37 @@ class InvokeModelContext:
         projected_input_tokens: int | None = _UNSET,
         dynamic_trailing_blocks: int = _UNSET,
     ) -> InvokeModelContext:
-        """Return a copy of this context with the given fields replaced, others unchanged.
+        """Return a copy with the given fields replaced; omitted fields keep their current value.
 
-        Typed convenience wrapper around ``dataclasses.replace`` (following the
-        ``datetime.replace()`` precedent) so middleware can transform the context without
-        importing ``dataclasses``:
-
+        Example:
+            ```python
             modified = context.replace(system_prompt="Be concise.")
+            ```
 
         Args:
             messages: Messages to send to the model.
             system_prompt: System prompt guiding the model.
             tool_specs: Tool specifications available to the model.
             tool_choice: How the model selects tools.
-            invocation_state: Per-invocation state (shared by reference across the run).
+            invocation_state: Per-invocation state, shared by reference across the run.
             model: The model this call invokes.
             projected_input_tokens: Estimated input token count for this call.
             dynamic_trailing_blocks: Trailing blocks of the last user message rebuilt each call.
 
         Returns:
-            A new ``InvokeModelContext`` with the specified fields replaced.
+            A new ``InvokeModelContext``.
         """
-        changes: dict[str, Any] = {
-            name: value
-            for name, value in {
-                "messages": messages,
-                "system_prompt": system_prompt,
-                "tool_specs": tool_specs,
-                "tool_choice": tool_choice,
-                "invocation_state": invocation_state,
-                "model": model,
-                "projected_input_tokens": projected_input_tokens,
-                "dynamic_trailing_blocks": dynamic_trailing_blocks,
-            }.items()
-            if value is not _UNSET
-        }
-        return dataclasses.replace(self, **changes)
+        return _replace(
+            self,
+            messages=messages,
+            system_prompt=system_prompt,
+            tool_specs=tool_specs,
+            tool_choice=tool_choice,
+            invocation_state=invocation_state,
+            model=model,
+            projected_input_tokens=projected_input_tokens,
+            dynamic_trailing_blocks=dynamic_trailing_blocks,
+        )
 
 
 InvokeModelStage: MiddlewareStage[InvokeModelContext, ModelStopReason, TypedEvent] = MiddlewareStage(name="invokeModel")
@@ -159,17 +161,14 @@ def _resolve_middleware_interrupt(
 class ExecuteToolContext:
     """Context passed to ExecuteToolStage middleware.
 
-    ``tool_use`` is a shallow copy of the executor's dict, so reassigning its top-level
-    keys (e.g. ``name``, ``toolUseId``) cannot corrupt executor state. Its ``input`` value
-    is shared by reference — it can hold arbitrary, non-copyable objects (e.g. the agent
-    injected on direct tool calls), so a deep copy is not possible; mutating ``input`` in
-    place still leaks. ``invocation_state`` is likewise shared by reference (matching how
-    hooks receive it). Middleware that needs a fully isolated ``tool_use`` should build a
-    new one and pass a modified context via ``dataclasses.replace()``.
+    ``tool_use`` is a shallow copy of the executor's dict, so reassigning its top-level keys
+    cannot corrupt executor state. Its ``input`` value is shared by reference (it can hold
+    non-copyable objects, such as the agent injected on direct tool calls), so mutating ``input``
+    in place still leaks; build a new ``tool_use`` and pass it through ``replace()`` instead.
+    ``invocation_state`` is shared by reference, as hooks receive it.
 
-    ``cancel_signal`` is the executor's own signal, passed on to the tool independently of this
-    context: middleware can observe it, but replacing it via ``dataclasses.replace()`` does not
-    change the signal the tool receives.
+    ``cancel_signal`` is executor-owned: middleware can observe it, but the tool always receives
+    the executor's signal, not the one on this context.
 
     Supports middleware-initiated interrupts via ``interrupt()`` for human-in-the-loop
     approval flows.
@@ -179,12 +178,9 @@ class ExecuteToolContext:
     tool: AgentTool | None
     tool_use: ToolUse
     invocation_state: dict[str, Any]
-    # Excluded from repr: an Event carries no useful text.
     cancel_signal: threading.Event = field(repr=False)
-    # Interrupt state is threaded in from the agent so interrupt() can register/resolve
-    # interrupts. Required (the executor is the sole constructor and always supplies it);
-    # excluded from repr to avoid dumping unrelated interrupt bookkeeping.
     _interrupt_state: _InterruptState = field(repr=False)
+    """Agent interrupt state that ``interrupt()`` resolves prior responses from; always supplied by the executor."""
 
     def interrupt(self, name: str, *, reason: Any = None, response: Any = None) -> MiddlewareInterruptResult:
         """Request a human-in-the-loop interrupt.
@@ -233,32 +229,24 @@ class ExecuteToolContext:
         tool_use: ToolUse = _UNSET,
         invocation_state: dict[str, Any] = _UNSET,
     ) -> ExecuteToolContext:
-        """Return a copy of this context with the given fields replaced, others unchanged.
+        """Return a copy with the given fields replaced; omitted fields keep their current value.
 
-        Typed convenience wrapper around ``dataclasses.replace`` (following the
-        ``datetime.replace()`` precedent) so middleware can transform the context without
-        importing ``dataclasses``:
+        ``agent``, ``cancel_signal``, and the interrupt state are carried over unchanged.
 
+        Example:
+            ```python
             modified = context.replace(tool_use={**context.tool_use, "input": cleaned})
+            ```
 
         Args:
             tool: The resolved tool implementation, or ``None`` if not found.
             tool_use: The tool use request (name, toolUseId, input).
-            invocation_state: Per-invocation state (shared by reference across the run).
+            invocation_state: Per-invocation state, shared by reference across the run.
 
         Returns:
-            A new ``ExecuteToolContext`` with the specified fields replaced.
+            A new ``ExecuteToolContext``.
         """
-        changes: dict[str, Any] = {
-            name: value
-            for name, value in {
-                "tool": tool,
-                "tool_use": tool_use,
-                "invocation_state": invocation_state,
-            }.items()
-            if value is not _UNSET
-        }
-        return dataclasses.replace(self, **changes)
+        return _replace(self, tool=tool, tool_use=tool_use, invocation_state=invocation_state)
 
 
 ExecuteToolStage: MiddlewareStage[ExecuteToolContext, ToolResultEvent, TypedEvent] = MiddlewareStage(name="executeTool")
@@ -337,16 +325,13 @@ class AgentStreamContext:
         return f"{_AGENT_STREAM_INTERRUPT_ID_PREFIX}{uuid.uuid5(uuid.NAMESPACE_OID, name)}"
 
 
-# Internal: not exported from middleware/__init__.py (kept out of __all__). The copy-vs-reference
-# contract for messages/invocation_state is not yet finalized, matching the TS SDK, which
-# keeps AgentStreamStage out of its public barrel (@internal) for the same reason.
 AgentStreamStage: MiddlewareStage[AgentStreamContext, EventLoopStopEvent, TypedEvent] = MiddlewareStage(
     name="agentStream"
 )
 """Built-in stage wrapping the entire agent output stream (outermost interception point).
 
-Middleware registered for this stage can filter, transform, or inject events, short-circuit
-the whole pass, or gate it behind a human-in-the-loop interrupt. The result event is the
-``EventLoopStopEvent`` that ends the pass (matching the "last event is the result"
-convention used across the SDK).
+Internal: kept out of ``strands.middleware.__all__`` until the copy-vs-reference contract of
+``AgentStreamContext`` is finalized. Middleware registered for this stage can filter, transform,
+or inject events, short-circuit the whole pass, or gate it behind a human-in-the-loop interrupt.
+The result event is the ``EventLoopStopEvent`` that ends the pass.
 """

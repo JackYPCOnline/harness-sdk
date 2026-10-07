@@ -111,15 +111,11 @@ class MiddlewareStage(Generic[TContext, TResult, TEvent]):
         return self is other
 
 
-# Handler type aliases are generic over the stage's context/result/event types so that the
-# per-phase overloads on ``Agent.add_middleware`` bind them and check the handler signature at
-# the call site. Python async generators cannot carry a return type, so ``TResult`` is not
-# expressible on the Wrap-phase generator (the result is the last yielded event, by SDK
-# convention) — only Output handlers, which receive the result explicitly, are generic over it.
+# The stage result is the last event a Wrap handler yields, so only Output handlers (which receive
+# it explicitly) are generic over TResult.
 MiddlewareNext = Callable[[TContext], AsyncGenerator[TEvent, None]]
 MiddlewareHandler = Callable[[TContext, MiddlewareNext[TContext, TEvent]], AsyncGenerator[TEvent, None]]
 MiddlewareInputHandler = Callable[[TContext], TContext | Awaitable[TContext]]
-# Output handlers take and return a MiddlewareResult wrapping the result event.
 MiddlewareOutputHandler = Callable[
     [MiddlewareResult[TResult]], MiddlewareResult[TResult] | Awaitable[MiddlewareResult[TResult]]
 ]

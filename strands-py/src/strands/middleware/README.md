@@ -31,10 +31,10 @@ The registry wraps the result event before calling the handler and unwraps the r
 wrapper back into the stream, so Wrap handlers and the event-loop integration still see a
 plain result event. Use `result.replace(value=...)` to produce the modified wrapper:
 ```python
-def output_handler(result):  # result: MiddlewareResult
-    stop_reason, message, usage, metrics = result.value["stop"]
+def output_handler(result: MiddlewareResult[ModelStopReason]) -> MiddlewareResult[ModelStopReason]:
+    event = result.value
     return result.replace(
-        value=ModelStopReason(stop_reason="custom", message=message, usage=usage, metrics=metrics),
+        value=ModelStopReason(stop_reason="custom", message=event.message, usage=event.usage, metrics=event.metrics),
     )
 ```
 
@@ -293,32 +293,32 @@ guard for it explicitly.
 
 ## No removal / cleanup
 
-Once registered, middleware cannot be removed. This matches the Python hook system which also does not support removal.
+**Divergence from TS.** TS `addMiddleware` returns a cleanup function and its registry has
+`remove()`. Python `add_middleware` returns `None` and middleware cannot be removed once registered,
+matching the Python hook system, which also does not support removal.
 
 ## Public surface
 
-The `middleware/` package is public. Register handlers with `agent.add_middleware(stage_or_phase,
-handler)` — a method with per-phase `@overload`s that bind the stage token's generics through the
-phase sub-tokens, so `context` fields, the result type, and the `next_fn` signature are checked at
-the call site (matching the TS SDK's per-phase overloads). The handler type aliases
-(`MiddlewareHandler`, `MiddlewareInputHandler`, `MiddlewareOutputHandler`, `MiddlewareNext`) are
-generic over the same type parameters. Python async generators cannot carry a return type, so the
-Wrap-phase generic omits `TResult` (the result is the last yielded event); only Output handlers,
-which receive the result explicitly, are generic over it.
+The `middleware/` package is public. `agent.add_middleware(stage_or_phase, handler)` is the only
+public entry point; it has per-phase `@overload`s that bind the stage token's generics through the
+phase sub-tokens, so an annotated handler's `context`, result, and `next_fn` types are checked at
+the call site (`tests_typing/test_middleware.py`). The handler type aliases (`MiddlewareHandler`,
+`MiddlewareInputHandler`, `MiddlewareOutputHandler`, `MiddlewareNext`) are generic over the same
+type parameters. Python async generators cannot carry a return type, so the Wrap-phase generic omits
+`TResult` (the result is the last yielded event); only Output handlers, which receive the result
+explicitly, are generic over it.
+
+Type checkers differ on unannotated lambdas: pyright infers the lambda's parameter from the matched
+overload, while mypy types it as `Any` (its overload resolution does not feed the phase token back
+into lambda inference). Annotated handlers are fully checked by both.
 
 `InvokeModelStage` and `ExecuteToolStage` (and their contexts, plus the per-stage result event
 types `ModelStopReason` and `ToolResultEvent`) are exported from `strands.middleware`.
 `AgentStreamStage`/`AgentStreamContext` stay internal — importable from `strands.middleware.stages`
-but kept out of `__all__` — because their copy-vs-reference contract is not finalized (see below),
-matching the TS SDK's `@internal` treatment.
-
-The `MiddlewareRegistry` stays private on the agent (`agent._middleware_registry`) and is not
-exported from `strands.middleware`; internal code imports it from `strands.middleware.registry`.
-`add_middleware` is the only public entry point.
-
-**Divergence from TS: no removal.** TS `addMiddleware` returns a cleanup function and its registry
-has `remove()`. Python `add_middleware` returns `None` and there is no removal — matching the Python
-hook system, which also does not support removal (see "No removal / cleanup" below).
+but kept out of `__all__` — because their copy-vs-reference contract is not finalized (see
+"AgentStreamStage context fields" above), matching the TS SDK's `@internal` treatment. The
+`MiddlewareRegistry` lives in the private `strands.middleware._registry` module and is only reached
+through `agent._middleware_registry` by the SDK's own executors.
 
 ## Tool exceptions are caught in the terminal
 
@@ -348,7 +348,7 @@ Context fields (`messages`, `system_prompt`, `tool_specs`, `tool_choice`) are de
 
 `InvokeModelContext.model` is the model the terminal invokes, initialized from `agent.model`. Middleware can point a single call at a different model via `replace()`, without mutating agent state; the terminal streams `context.model`, so the replacement also drives the trace span's `model_id`:
 ```python
-modified = replace(context, model=other_model)
+modified = context.replace(model=other_model)
 ```
 
 ## Context transformation
