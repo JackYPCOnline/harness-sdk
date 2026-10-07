@@ -320,6 +320,13 @@ but kept out of `__all__` — because their copy-vs-reference contract is not fi
 `MiddlewareRegistry` lives in the private `strands.middleware._registry` module and is only reached
 through `agent._middleware_registry` by the SDK's own executors.
 
+## Custom stages are unsupported
+
+`MiddlewareStage` is exported so handlers and helpers can be annotated, but constructing a stage
+token is unsupported: the SDK only ever invokes `InvokeModelStage`, `ExecuteToolStage`, and the
+internal `AgentStreamStage`, so a user-created token never runs. TS keeps `createStage` out of its
+public API for the same reason; Python cannot export the type without the constructor.
+
 ## Tool exceptions are caught in the terminal
 
 A raw exception from `tool.stream()` is converted to an error `ToolResultEvent` inside the

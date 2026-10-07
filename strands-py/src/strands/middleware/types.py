@@ -86,7 +86,11 @@ class MiddlewareOutputPhase(Generic[TContext, TResult, TEvent]):
 
 
 class MiddlewareStage(Generic[TContext, TResult, TEvent]):
-    """A stage token identifying a middleware interception point."""
+    """A stage token identifying a middleware interception point.
+
+    Only the SDK's built-in tokens (``InvokeModelStage``, ``ExecuteToolStage``) are invoked;
+    constructing a custom stage is unsupported.
+    """
 
     __slots__ = ("name", "Input", "Wrap", "Output")
 
