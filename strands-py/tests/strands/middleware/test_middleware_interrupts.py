@@ -8,12 +8,8 @@ import strands
 from strands import Agent
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
 from strands.interrupt import Interrupt
-from strands.middleware.stages import (
-    AgentStreamContext,
-    ExecuteToolStage,
-    MiddlewareInterruptResult,
-    _resolve_middleware_interrupt,
-)
+from strands.middleware._agent_stream import AgentStreamContext
+from strands.middleware.stages import ExecuteToolStage, MiddlewareInterruptResult, _resolve_middleware_interrupt
 from strands.types._events import ToolInterruptEvent, ToolResultEvent
 from tests.fixtures.mock_hook_provider import MockHookProvider
 from tests.fixtures.mocked_model_provider import MockedModelProvider

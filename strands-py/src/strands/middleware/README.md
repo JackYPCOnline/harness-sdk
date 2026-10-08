@@ -5,7 +5,8 @@ This implementation follows the behavioral spec defined in `strands-ts/src/middl
 ## Scope
 
 All three stages are implemented: `InvokeModelStage`, `ExecuteToolStage`, and `AgentStreamStage`.
-`AgentStreamStage` is internal (see below), matching the TS SDK.
+`AgentStreamStage` is internal (`strands.middleware._agent_stream`, see "Public surface" below),
+matching the TS SDK.
 
 ## Result encoding
 
@@ -312,13 +313,17 @@ Type checkers differ on unannotated lambdas: pyright infers the lambda's paramet
 overload, while mypy types it as `Any` (its overload resolution does not feed the phase token back
 into lambda inference). Annotated handlers are fully checked by both.
 
-`InvokeModelStage` and `ExecuteToolStage` (and their contexts, plus the per-stage result event
-types `ModelStopReason` and `ToolResultEvent`) are exported from `strands.middleware`.
-`AgentStreamStage`/`AgentStreamContext` stay internal — importable from `strands.middleware.stages`
-but kept out of `__all__` — because their copy-vs-reference contract is not finalized (see
-"AgentStreamStage context fields" above), matching the TS SDK's `@internal` treatment. The
-`MiddlewareRegistry` lives in the private `strands.middleware._registry` module and is only reached
-through `agent._middleware_registry` by the SDK's own executors.
+`InvokeModelStage` and `ExecuteToolStage` are exported from `strands.middleware` together with
+their contexts, the per-stage result event types `ModelStopReason` and `ToolResultEvent`, and the
+stream event base `TypedEvent` (the stages' event type parameter), so a fully annotated handler
+such as `MiddlewareHandler[InvokeModelContext, TypedEvent]` needs no private import. This mirrors
+TS exporting `AgentStreamEvent` at the top level.
+`AgentStreamStage`/`AgentStreamContext` stay internal in the private `strands.middleware._agent_stream`
+module because their copy-vs-reference contract is not finalized (see "AgentStreamStage context
+fields" above). TS marks them `@internal` and its typedoc build hides them; the Python API-docs
+generator skips `_`-prefixed modules, so the private module is what keeps them off the generated
+reference. The `MiddlewareRegistry` likewise lives in the private `strands.middleware._registry`
+module and is only reached through `agent._middleware_registry` by the SDK's own executors.
 
 ## Custom stages are unsupported
 

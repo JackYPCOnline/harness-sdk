@@ -27,7 +27,7 @@ Example:
     ```
 """
 
-from ..types._events import ModelStopReason, ToolResultEvent
+from ..types._events import ModelStopReason, ToolResultEvent, TypedEvent
 from .stages import (
     ExecuteToolContext,
     ExecuteToolStage,
@@ -47,7 +47,8 @@ from .types import (
     MiddlewareWrapPhase,
 )
 
-# AgentStreamStage and AgentStreamContext stay internal until their context contract is finalized.
+# AgentStreamStage and AgentStreamContext live in the private _agent_stream module until their
+# context contract is finalized.
 __all__ = [
     "ExecuteToolContext",
     "ExecuteToolStage",
@@ -65,4 +66,5 @@ __all__ = [
     "MiddlewareWrapPhase",
     "ModelStopReason",
     "ToolResultEvent",
+    "TypedEvent",
 ]

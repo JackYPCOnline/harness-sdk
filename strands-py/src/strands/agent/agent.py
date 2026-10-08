@@ -68,8 +68,8 @@ from ..interrupt import InterruptException, _InterruptState
 from ..interventions.handler import InterventionHandler
 from ..interventions.registry import InterventionRegistry
 from ..memory import MemoryManager, MemoryManagerConfig
+from ..middleware._agent_stream import AgentStreamContext, AgentStreamStage
 from ..middleware._registry import MiddlewareRegistry
-from ..middleware.stages import AgentStreamContext, AgentStreamStage
 from ..middleware.types import (
     MiddlewareHandler,
     MiddlewareInputHandler,

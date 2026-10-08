@@ -6,7 +6,8 @@ import pytest
 
 import strands
 from strands import Agent
-from strands.middleware.stages import AgentStreamContext, AgentStreamStage, MiddlewareInterruptResult
+from strands.middleware._agent_stream import AgentStreamContext, AgentStreamStage
+from strands.middleware.stages import MiddlewareInterruptResult
 from strands.session import FileSessionManager
 from strands.telemetry.metrics import EventLoopMetrics
 from strands.types._events import EventLoopStopEvent, InitEventLoopEvent, ModelMessageEvent, TextStreamEvent

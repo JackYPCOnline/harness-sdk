@@ -9,13 +9,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from ..interrupt import _AGENT_STREAM_INTERRUPT_ID_PREFIX, Interrupt, InterruptException
+from ..interrupt import Interrupt, InterruptException
 from .types import MiddlewareStage
 
 if TYPE_CHECKING:
     from ..interrupt import _InterruptState
     from ..models.model import Model
-    from ..types._events import EventLoopStopEvent, ModelStopReason, ToolResultEvent, TypedEvent
+    from ..types._events import ModelStopReason, ToolResultEvent, TypedEvent
     from ..types.agent import LocalAgent
     from ..types.content import Messages, SystemPrompt
     from ..types.tools import AgentTool, ToolChoice, ToolSpec, ToolUse
@@ -256,82 +256,4 @@ Middleware registered for this stage can add telemetry, validate inputs, mock re
 or gate execution behind a human-in-the-loop interrupt. The result event is the
 ``ToolResultEvent`` produced by the tool (matching the "last event is the result"
 convention used across the SDK).
-"""
-
-
-@dataclass
-class AgentStreamContext:
-    """Context passed to AgentStreamStage middleware.
-
-    Wraps the entire agent output stream at the outermost interception point, so middleware
-    can filter, transform, or inject events across a whole invocation pass, or gate the pass
-    behind a human-in-the-loop interrupt.
-
-    ``messages`` is the input for this pass, shared by reference (the executor already
-    appended them to history). ``invocation_state`` is likewise shared by reference, matching
-    how hooks and tools receive it. The copy-vs-reference contract is not yet finalized;
-    middleware that needs isolation should copy explicitly.
-
-    Supports middleware-initiated interrupts via ``interrupt()`` for human-in-the-loop
-    approval flows.
-    """
-
-    agent: LocalAgent
-    messages: Messages
-    invocation_state: dict[str, Any]
-    # A snapshot of the agent's interrupts taken before the pass, threaded in so interrupt() can
-    # resolve prior responses. It is a snapshot rather than the live dict because this context's
-    # lifetime spans the whole pass: a tool cycle within the same pass ends and clears the live
-    # interrupts, so reading a snapshot keeps a gate's re-read after next_fn stable. Required
-    # (the run loop is the sole constructor and always supplies it); excluded from repr to
-    # avoid dumping unrelated interrupt bookkeeping.
-    _interrupts: Mapping[str, Interrupt] = field(repr=False)
-
-    def interrupt(self, name: str, *, reason: Any = None, response: Any = None) -> MiddlewareInterruptResult:
-        """Request a human-in-the-loop interrupt.
-
-        On first execution (no prior response) this raises ``InterruptException`` to halt
-        the agent. After the user resumes with a response, the second call returns that
-        response. Providing ``response`` preemptively skips the interrupt entirely.
-
-        This method is read-only with respect to interrupt state (see
-        ``_resolve_middleware_interrupt``): the run loop registers the interrupt in its
-        ``InterruptException`` handler as the single source of truth.
-
-        Args:
-            name: User-defined name for the interrupt. The name must be unique
-                across all agent-stream middleware that share an interrupt dict — including
-                across agents in a Graph/Swarm. Two gates with the same name collide and share
-                one response.
-            reason: Optional reason for the interrupt (surfaced to the user).
-            response: Optional preemptive response — when set, no interrupt is raised.
-
-        Returns:
-            The user's response wrapped in a ``MiddlewareInterruptResult``.
-
-        Raises:
-            InterruptException: When no response is available yet and none was provided.
-            RuntimeError: Raised by the run loop when this is called after the pass has already
-                produced its stop event, which resuming cannot replay.
-        """
-        return _resolve_middleware_interrupt(self._interrupts, self._interrupt_id(name), name, reason, response)
-
-    def _interrupt_id(self, name: str) -> str:
-        """Derive the interrupt id for ``name``, namespaced to the agent-stream stage.
-
-        Follows the SDK's ``v1:`` interrupt-id scheme (see ``types/interrupt.py``), hashing
-        the user-provided name so ids stay stable across resumes.
-        """
-        return f"{_AGENT_STREAM_INTERRUPT_ID_PREFIX}{uuid.uuid5(uuid.NAMESPACE_OID, name)}"
-
-
-AgentStreamStage: MiddlewareStage[AgentStreamContext, EventLoopStopEvent, TypedEvent] = MiddlewareStage(
-    name="agentStream"
-)
-"""Built-in stage wrapping the entire agent output stream (outermost interception point).
-
-Internal: kept out of ``strands.middleware.__all__`` until the copy-vs-reference contract of
-``AgentStreamContext`` is finalized. Middleware registered for this stage can filter, transform,
-or inject events, short-circuit the whole pass, or gate it behind a human-in-the-loop interrupt.
-The result event is the ``EventLoopStopEvent`` that ends the pass.
 """

@@ -12,8 +12,8 @@ from strands.middleware import (
     MiddlewareResult,
     ModelStopReason,
     ToolResultEvent,
+    TypedEvent,
 )
-from strands.types._events import TypedEvent
 from strands.types.content import Message
 from strands.types.event_loop import StopReason
 
