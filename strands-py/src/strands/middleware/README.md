@@ -327,13 +327,15 @@ Exceptions raised by ExecuteToolStage *middleware* are caught one layer further 
 `exception`, and the agent keeps running. TS's concurrent executor matches this; its sequential
 executor rethrows.
 
-## Tool span placement
+## Telemetry records post-middleware state
 
-The tool span and tool metrics are recorded by `ToolExecutor._stream_with_trace`, around the whole
-tool call: hooks, the ExecuteToolStage chain, and the terminal. TS records them inside its terminal
-(`_executeToolCore`), so there the span carries the post-middleware `toolUse` and a short-circuit
-records no span. Moving the Python span into the terminal is a telemetry change for every tracing
-user and is tracked as its own change rather than as part of making the middleware API public.
+The tool span and the tool metrics are recorded inside the ExecuteToolStage terminal, as the model
+span is inside the InvokeModelStage terminal and as TS's `_executeToolCore` does. So the span
+carries the `tool_use` and the tool spec the tool actually ran with (after `BeforeToolCallEvent`
+rewrites and Input middleware), a hook cancel or a middleware short-circuit records no span and no
+metrics, a background dispatch acknowledgement records nothing (the background run records its own),
+and a hook-driven retry records one span per attempt. Direct `agent.tool.<name>()` calls record no
+tool span, as in TS.
 
 ## Direct tool calls run through the chain
 
