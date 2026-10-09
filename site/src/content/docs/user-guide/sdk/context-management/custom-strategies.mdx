@@ -115,7 +115,7 @@ Preview modes: `"head"`, `"tail"`, <Syntax py='"head_tail"' ts='"headTail"' />.
 
 ### Summarize
 
-Replaces content with an LLM-generated summary. Uses the agent's model by default.
+Replaces content with an LLM-generated summary.
 
 <Tabs>
 <Tab label="Python">
@@ -146,8 +146,33 @@ Offload.summarize("*").when(
 
 | Parameter | Key | Default |
 |-----------|-----|---------|
-| Model | `model` | Agent's model |
+| Model | `model` | Agent's `aux_model` |
 | System prompt | `system_prompt` | Built-in |
+| Background | `background` | `False` |
+
+The [`aux_model`](@api/python/strands.agent.agent#Agent.aux_model) falls back to the
+agent's main model when it is not configured.
+
+Configure a per-block strategy to summarize older tool results concurrently:
+
+```python
+from strands.experimental.context_manager import Offload
+
+background_tool_results = Offload.summarize(
+    "tool_results",
+    {"background": True},
+).when(threshold=1_000, preserve_recent=10)
+```
+
+`background` cannot be combined with a `utilization` condition.
+
+The strategy starts up to 10 summaries per batch and keeps the original tool results
+in context while they run. It replaces the batch before a later model call when every
+summary is ready. Otherwise, the invocation waits for the batch and replaces it before
+returning. On overflow, the strategy cancels unfinished work and summarizes inline for
+immediate recovery. Text and media blocks always summarize inline.
+
+This setting does not require `Agent(background_tasks=...)`.
 
 </Tab>
 <Tab label="TypeScript">
@@ -159,6 +184,8 @@ Offload.summarize("*").when(
 
 </Tab>
 </Tabs>
+
+Background summarization is available in Python.
 
 ### Drop
 

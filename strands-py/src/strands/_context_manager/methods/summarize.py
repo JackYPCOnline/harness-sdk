@@ -52,10 +52,18 @@ class SummarizeConfig(TypedDict, total=False):
         model: Model used for summarization. Resolution order: this ``model`` > ``agent.aux_model``
             > ``agent.model``.
         system_prompt: Custom system prompt for the summarization model.
+        background: Summarize up to 10 eligible tool results concurrently while the
+            agent loop continues. Original results stay in place until every summary in
+            the batch is ready. A later strategy pass commits the completed batch before
+            its model call; otherwise, invocation finalization waits for and commits it.
+            Overflow recovery cancels unfinished work and summarizes inline. Applies to
+            per-block strategies only; text and media blocks still summarize inline.
+            Does not require ``Agent.background_tasks``. Defaults to False.
     """
 
     model: Model
     system_prompt: str
+    background: bool
 
 
 async def _summarize_content(
