@@ -10,12 +10,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from ..interrupt import Interrupt, InterruptException
+from ..types._events import ModelStopReason, ToolResultEvent
 from .types import MiddlewareStage
 
 if TYPE_CHECKING:
     from ..interrupt import _InterruptState
     from ..models.model import Model
-    from ..types._events import ModelStopReason, ToolResultEvent, TypedEvent
+    from ..types._events import TypedEvent
     from ..types.agent import LocalAgent
     from ..types.content import Messages, SystemPrompt
     from ..types.tools import AgentTool, ToolChoice, ToolSpec, ToolUse
@@ -97,7 +98,20 @@ class InvokeModelContext:
         )
 
 
-InvokeModelStage: MiddlewareStage[InvokeModelContext, ModelStopReason, TypedEvent] = MiddlewareStage(name="invokeModel")
+@dataclass
+class InvokeModelResult:
+    """Result passed to and returned from ``InvokeModelStage.Output`` handlers.
+
+    Attributes:
+        result: The ``ModelStopReason`` event that ends the model call.
+    """
+
+    result: ModelStopReason
+
+
+InvokeModelStage: MiddlewareStage[InvokeModelContext, InvokeModelResult, TypedEvent] = MiddlewareStage(
+    name="invokeModel", result_type=InvokeModelResult, result_event=ModelStopReason
+)
 """Built-in stage wrapping core model invocation.
 
 Middleware registered for this stage can rate-limit, cache, or transform model inputs/outputs.
@@ -249,11 +263,22 @@ class ExecuteToolContext:
         return _replace(self, tool=tool, tool_use=tool_use, invocation_state=invocation_state)
 
 
-ExecuteToolStage: MiddlewareStage[ExecuteToolContext, ToolResultEvent, TypedEvent] = MiddlewareStage(name="executeTool")
+@dataclass
+class ExecuteToolResult:
+    """Result passed to and returned from ``ExecuteToolStage.Output`` handlers.
+
+    Attributes:
+        result: The ``ToolResultEvent`` produced by the tool call.
+    """
+
+    result: ToolResultEvent
+
+
+ExecuteToolStage: MiddlewareStage[ExecuteToolContext, ExecuteToolResult, TypedEvent] = MiddlewareStage(
+    name="executeTool", result_type=ExecuteToolResult, result_event=ToolResultEvent
+)
 """Built-in stage wrapping individual tool execution.
 
 Middleware registered for this stage can add telemetry, validate inputs, mock responses,
-or gate execution behind a human-in-the-loop interrupt. The result event is the
-``ToolResultEvent`` produced by the tool (matching the "last event is the result"
-convention used across the SDK).
+or gate execution behind a human-in-the-loop interrupt.
 """

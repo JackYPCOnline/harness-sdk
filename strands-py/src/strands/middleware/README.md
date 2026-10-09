@@ -12,7 +12,15 @@ matching the TS SDK.
 
 TypeScript uses async generator `return` values propagated via `yield*`. Python async generators cannot `return` values.
 
-Instead, the **last yielded event IS the result**. This matches the existing Python SDK convention where `ModelStopReason` is the last event from `stream_messages()`, `ToolResultEvent` is the last from tool execution, etc. The middleware chain is transparent — events (including the result event) flow through naturally. There is no separate sentinel type.
+Instead, the **result is an event in the stream**, recognized by type: `ModelStopReason` for
+`InvokeModelStage`, `ToolResultEvent` for `ExecuteToolStage`, `EventLoopStopEvent` for the internal
+`AgentStreamStage`. Each stage token records its result event class (`MiddlewareStage.result_event`),
+and the registry's Output adapter and every call site select the result with `isinstance`, so a Wrap
+handler may yield its own events before or after it (the TS spec's "inject events before or after
+the inner chain's events"). When a chain yields more than one result event (a hook-driven retry
+re-running the chain), the last one wins; a chain that yields none raises `RuntimeError` at the call
+site. This matches the existing Python SDK convention where `ModelStopReason` is the last event from
+`stream_messages()` and `ToolResultEvent` the last from tool execution.
 
 Pass-through is:
 ```python
@@ -27,46 +35,35 @@ async def cached(context, next_fn):
     yield ModelStopReason(stop_reason="end_turn", message=cached_msg, usage=usage, metrics=metrics)
 ```
 
-Output phase handlers take and return a `MiddlewareResult` wrapping the result event.
-The registry wraps the result event before calling the handler and unwraps the returned
-wrapper back into the stream, so Wrap handlers and the event-loop integration still see a
-plain result event. Use `result.replace(value=...)` to produce the modified wrapper:
+Wrap handlers see the raw event stream; only **Output** handlers see a wrapper. The registry wraps
+the result event in the stage's result type before calling the handler and yields the returned
+wrapper's `result` back into the stream in its place, so the rest of the chain and the call site
+still see a plain event:
 ```python
-def output_handler(result: MiddlewareResult[ModelStopReason]) -> MiddlewareResult[ModelStopReason]:
-    event = result.value
-    return result.replace(
-        value=ModelStopReason(stop_reason="custom", message=event.message, usage=event.usage, metrics=event.metrics),
+def output_handler(result: InvokeModelResult) -> InvokeModelResult:
+    event = result.result
+    return InvokeModelResult(
+        result=ModelStopReason(stop_reason="custom", message=event.message, usage=event.usage, metrics=event.metrics),
     )
 ```
 
-Only the **Output** phase uses the wrapper. Wrap and Input handlers deal in raw
-events/contexts.
-
-The wrapper currently holds only `value`. Input already has a wrapper (the context
-dataclass), so `MiddlewareResult` gives Output the same extensibility surface for future
-metadata. Since Python async generators cannot return values, Wrap-phase metadata would
-be yielded as events into the stream rather than attached to a return value. See the TS
-spec ("Metadata transport") for rationale.
-
-If we later want per-stage typed results (e.g., `InvokeModelResult` with named fields
-instead of an opaque `.value`), those can derive from `MiddlewareResult`. Existing Output
-handlers that accept `MiddlewareResult` continue to work; new handlers can narrow to the
-subclass for typed access. This is a two-way door — no migration required.
+TS is symmetric (Wrap handlers return the wrapper too) because its generators carry a return value.
+Python's asymmetry is inherent to the encoding above: Wrap-phase metadata would have to be yielded as
+events, so only the Output wrapper can grow fields later (see the TS spec, "Metadata transport").
 
 ## Per-stage result types
 
-Each stage's result is the last event its chain yields. TypeScript wraps these in named
-result objects (`InvokeModelResult`, `ExecuteToolResult`); Python uses the underlying event
-directly, so there is no equivalent wrapper class:
+Each stage has a result type with a single `result` field, matching the TS `InvokeModelResult` /
+`ExecuteToolResult` / `AgentStreamResult` shape (`MiddlewareStage.result_type`). The field holds
+the stage's result *event* rather than TS's `StreamAggregatedResult` / `ToolResultBlock` /
+`AgentResult`, because the registry has to re-yield it into the stream:
 
-- `InvokeModelStage` → `ModelStopReason` (the last event from `stream_messages()`).
-- `ExecuteToolStage` → `ToolResultEvent` (the last event from tool execution). It already
-  carries both `tool_result` and `exception`, so a separate `ExecuteToolResult` is redundant.
-- `AgentStreamStage` → `EventLoopStopEvent` (the last event from an invocation pass). It carries
-  the full stop tuple (`stop_reason`, `message`, `metrics`, ...) the `AgentResult` is built from,
-  so a separate `AgentStreamResult` is redundant. Since middleware may yield trailing events
-  *after* the stop event, `stream_async` selects the last `EventLoopStopEvent` — not the last
-  event overall — and raises `RuntimeError` if the chain drops it entirely.
+- `InvokeModelStage` → `InvokeModelResult(result: ModelStopReason)`. `ModelStopReason` exposes
+  `stop_reason`, `message`, `usage` and `metrics`, the fields of TS's `StreamAggregatedResult`.
+- `ExecuteToolStage` → `ExecuteToolResult(result: ToolResultEvent)`. The event carries both
+  `tool_result` and `exception`.
+- `AgentStreamStage` → `AgentStreamResult(result: EventLoopStopEvent)` (internal). The event carries
+  the full stop tuple the `AgentResult` is built from.
 
 Short-circuiting a tool call yields a `ToolResultEvent` directly:
 ```python
@@ -98,11 +95,9 @@ the stage result:
   the chain past the Output adapter; `ToolExecutor._stream` catches it and registers the
   interrupt.
 - **Tool-originated** (a `ToolInterruptEvent` from `tool.stream()`, including sub-agent
-  interrupts via `_AgentAsTool`) flows through the chain as a normal event. The Output adapter
-  skips any event matching the `InterruptControlEvent` protocol (a truthy `is_interrupt`) when
-  picking the positional result, so it is never mistaken for the result; `_stream` registers
-  its interrupts and short-circuits. The protocol keeps the stage-agnostic registry from
-  importing tool-specific event types.
+  interrupts via `_AgentAsTool`) flows through the chain as a normal event. It is not the stage's
+  result event, so the Output adapter forwards it untouched and `_stream` registers its interrupts
+  and short-circuits.
 
 Either way `_stream` surfaces a single `ToolInterruptEvent` to the event loop.
 
@@ -340,6 +335,24 @@ ExecuteToolStage terminal, so middleware always observes a *result*, not a throw
 a tool-raised interrupt still halts. In practice decorated `@tool` tools already self-convert
 their exceptions; this only affects custom `AgentTool`s whose `stream()` raises directly.
 
+Exceptions raised by ExecuteToolStage *middleware* are caught one layer further out, by
+`ToolExecutor._stream`: they too become an error `ToolResult`, `AfterToolCallEvent` fires with the
+`exception`, and the agent keeps running. TS's concurrent executor matches this; its sequential
+executor rethrows.
+
+## Direct tool calls run through the chain
+
+`agent.tool.<name>(...)` goes through `ToolExecutor._stream`, so ExecuteToolStage middleware runs
+for direct calls exactly as for model-requested ones. TS bypasses middleware on that path
+(`tool-caller.ts`). A direct call cannot pause for a human, so a middleware `interrupt()` on it
+surfaces as `RuntimeError("cannot raise interrupt in direct tool call")`.
+
+## Interrupting after `next_fn` re-runs the tool
+
+`ExecuteToolContext.interrupt()` called *after* the tool ran discards the tool's result: the
+`InterruptException` unwinds the chain, and on resume the whole tool call executes again. Gate
+before `next_fn`, or make the tool idempotent. The same holds in TS.
+
 ## Unknown tools run through the chain
 
 When the model calls a tool that isn't in the registry, the middleware chain still runs — with
@@ -355,6 +368,12 @@ short-circuiting before the chain. `ExecuteToolContext.tool` is therefore `Agent
 ## Defensive copies
 
 Context fields (`messages`, `system_prompt`, `tool_specs`, `tool_choice`) are deep-copied when building the middleware context. `invocation_state` is shared by reference. `model_state` is excluded from the context entirely — middleware cannot access or modify it. The terminal reads it directly from the agent at invocation time.
+
+Model state is snapshotted once per `InvokeModelStage` run, before the chain, and written back
+after the chain completes. Two low-stakes differences from TS: the snapshot is written back even
+when a Wrap handler short-circuits (TS only writes back when its terminal ran), and the one snapshot
+is shared across `next_fn` retries within a run (TS wraps a fresh copy per attempt), so a provider's
+writes during a failed attempt are visible to the retry.
 
 ## Per-call model
 

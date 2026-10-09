@@ -30,8 +30,10 @@ Example:
 from ..types._events import ModelStopReason, ToolResultEvent, TypedEvent
 from .stages import (
     ExecuteToolContext,
+    ExecuteToolResult,
     ExecuteToolStage,
     InvokeModelContext,
+    InvokeModelResult,
     InvokeModelStage,
     MiddlewareInterruptResult,
 )
@@ -42,17 +44,18 @@ from .types import (
     MiddlewareNext,
     MiddlewareOutputHandler,
     MiddlewareOutputPhase,
-    MiddlewareResult,
     MiddlewareStage,
     MiddlewareWrapPhase,
 )
 
-# AgentStreamStage and AgentStreamContext live in the private _agent_stream module until their
-# context contract is finalized.
+# AgentStreamStage, AgentStreamContext and AgentStreamResult live in the private _agent_stream
+# module until their context contract is finalized.
 __all__ = [
     "ExecuteToolContext",
+    "ExecuteToolResult",
     "ExecuteToolStage",
     "InvokeModelContext",
+    "InvokeModelResult",
     "InvokeModelStage",
     "MiddlewareHandler",
     "MiddlewareInputHandler",
@@ -61,7 +64,6 @@ __all__ = [
     "MiddlewareNext",
     "MiddlewareOutputHandler",
     "MiddlewareOutputPhase",
-    "MiddlewareResult",
     "MiddlewareStage",
     "MiddlewareWrapPhase",
     "ModelStopReason",

@@ -5,11 +5,12 @@ from typing_extensions import assert_type
 from strands import Agent
 from strands.middleware import (
     ExecuteToolContext,
+    ExecuteToolResult,
     ExecuteToolStage,
     InvokeModelContext,
+    InvokeModelResult,
     InvokeModelStage,
     MiddlewareNext,
-    MiddlewareResult,
     ModelStopReason,
     ToolResultEvent,
     TypedEvent,
@@ -27,14 +28,19 @@ async def inject_prompt_async(context: InvokeModelContext) -> InvokeModelContext
     return context
 
 
-def log_stop_reason(result: MiddlewareResult[ModelStopReason]) -> MiddlewareResult[ModelStopReason]:
-    assert_type(result.value, ModelStopReason)
-    assert_type(result.value.stop_reason, StopReason)
-    assert_type(result.value.message, Message)
-    return result.replace(value=result.value)
+def log_stop_reason(result: InvokeModelResult) -> InvokeModelResult:
+    assert_type(result.result, ModelStopReason)
+    assert_type(result.result.stop_reason, StopReason)
+    assert_type(result.result.message, Message)
+    return InvokeModelResult(result=result.result)
 
 
-async def rewrite_stop_reason(result: MiddlewareResult[ModelStopReason]) -> MiddlewareResult[ModelStopReason]:
+async def rewrite_stop_reason(result: InvokeModelResult) -> InvokeModelResult:
+    return result
+
+
+def rewrite_tool_result(result: ExecuteToolResult) -> ExecuteToolResult:
+    assert_type(result.result, ToolResultEvent)
     return result
 
 
@@ -56,8 +62,8 @@ async def approval_gate(
         yield event
 
 
-def unwrap_result(result: MiddlewareResult[ModelStopReason]) -> ModelStopReason:
-    return result.value
+def unwrap_result(result: InvokeModelResult) -> ModelStopReason:
+    return result.result
 
 
 def register_middleware(agent: Agent) -> None:
@@ -68,9 +74,11 @@ def register_middleware(agent: Agent) -> None:
     agent.add_middleware(InvokeModelStage.Output, log_stop_reason)
     agent.add_middleware(InvokeModelStage.Output, rewrite_stop_reason)
     agent.add_middleware(ExecuteToolStage, approval_gate)
+    agent.add_middleware(ExecuteToolStage.Output, rewrite_tool_result)
 
     agent.add_middleware(ExecuteToolStage.Input, inject_prompt)  # type: ignore[arg-type]
     agent.add_middleware(ExecuteToolStage, passthrough)  # type: ignore[arg-type]
+    agent.add_middleware(ExecuteToolStage.Output, log_stop_reason)  # type: ignore[arg-type]
     agent.add_middleware(InvokeModelStage, inject_prompt)  # type: ignore[arg-type]
     agent.add_middleware(InvokeModelStage.Output, inject_prompt)  # type: ignore[arg-type]
     agent.add_middleware(InvokeModelStage.Output, unwrap_result)  # type: ignore[arg-type]

@@ -1299,9 +1299,9 @@ class Agent(AgentBase, LocalAgent):
             stage_or_phase: A stage token for the Wrap phase, or one of its ``.Input`` / ``.Output``
                 sub-tokens.
             handler: A Wrap handler is an async generator ``(context, next_fn)`` that yields events,
-                the last of which is the stage result. An Input handler is ``(context) -> context``
-                and an Output handler is ``(MiddlewareResult) -> MiddlewareResult``; both may be
-                sync or async.
+                one of which is the stage's result event. An Input handler is
+                ``(context) -> context`` and an Output handler is ``(result) -> result`` on the
+                stage's result type (e.g. ``InvokeModelResult``); both may be sync or async.
 
         Example:
             ```python

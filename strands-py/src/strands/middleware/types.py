@@ -2,54 +2,12 @@
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar, runtime_checkable
+from typing import Any, Generic, TypeVar
 
 TContext = TypeVar("TContext")
 TResult = TypeVar("TResult")
 TEvent = TypeVar("TEvent")
-
-
-@runtime_checkable
-class InterruptControlEvent(Protocol):
-    """Structural type for events that are control-flow signals, never a stage result.
-
-    The middleware registry is stage-agnostic — it must not import tool- or model-specific
-    event classes. Any event that declares ``is_interrupt`` (e.g. ``ToolInterruptEvent``)
-    matches this protocol, so the Output-phase adapter can recognize an interrupt and keep
-    it out of the positional "last event is the result" selection without a coupling import.
-    """
-
-    @property
-    def is_interrupt(self) -> bool:
-        """True when the event halts the stage rather than producing a result."""
-        ...
-
-
-@dataclass
-class MiddlewareResult(Generic[TResult]):
-    """Wrapper passed to and returned from Output phase handlers.
-
-    The wrapper, rather than the bare result event, gives Output handlers a surface that can
-    grow fields without changing the handler signature.
-
-    Attributes:
-        value: The stage's result, the last event from the chain (e.g. ``ModelStopReason``).
-    """
-
-    value: TResult
-
-    def replace(self, *, value: TResult) -> MiddlewareResult[TResult]:
-        """Return a copy with ``value`` replaced.
-
-        Example:
-            ```python
-            return result.replace(value=transformed_event)
-            ```
-        """
-        return dataclasses.replace(self, value=value)
 
 
 class MiddlewareInputPhase(Generic[TContext, TResult, TEvent]):
@@ -90,13 +48,22 @@ class MiddlewareStage(Generic[TContext, TResult, TEvent]):
 
     Only the SDK's built-in tokens (``InvokeModelStage``, ``ExecuteToolStage``) are invoked;
     constructing a custom stage is unsupported.
+
+    Attributes:
+        name: Human-readable name for debugging and logging.
+        result_type: The wrapper class Output handlers receive and return (``TResult``).
+        result_event: The event class that is this stage's result; the registry and the call
+            sites select it from the stream by type, so Wrap handlers may yield other events
+            before or after it.
     """
 
-    __slots__ = ("name", "Input", "Wrap", "Output")
+    __slots__ = ("name", "result_type", "result_event", "Input", "Wrap", "Output")
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, result_type: type[TResult], result_event: type[Any]) -> None:
         """Create a stage token with its Input/Wrap/Output phase sub-tokens."""
         self.name = name
+        self.result_type = result_type
+        self.result_event = result_event
         self.Input: MiddlewareInputPhase[TContext, TResult, TEvent] = MiddlewareInputPhase(self)
         self.Wrap: MiddlewareWrapPhase[TContext, TResult, TEvent] = MiddlewareWrapPhase(self)
         self.Output: MiddlewareOutputPhase[TContext, TResult, TEvent] = MiddlewareOutputPhase(self)
@@ -114,11 +81,9 @@ class MiddlewareStage(Generic[TContext, TResult, TEvent]):
         return self is other
 
 
-# The stage result is the last event a Wrap handler yields, so only Output handlers (which receive
-# it explicitly) are generic over TResult.
+# Wrap handlers deal in the raw event stream, so only Output handlers (which receive the wrapped
+# result explicitly) are generic over TResult.
 MiddlewareNext = Callable[[TContext], AsyncGenerator[TEvent, None]]
 MiddlewareHandler = Callable[[TContext, MiddlewareNext[TContext, TEvent]], AsyncGenerator[TEvent, None]]
 MiddlewareInputHandler = Callable[[TContext], TContext | Awaitable[TContext]]
-MiddlewareOutputHandler = Callable[
-    [MiddlewareResult[TResult]], MiddlewareResult[TResult] | Awaitable[MiddlewareResult[TResult]]
-]
+MiddlewareOutputHandler = Callable[[TResult], TResult | Awaitable[TResult]]

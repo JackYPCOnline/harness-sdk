@@ -31,8 +31,8 @@ in) and a result (what comes back), and its handlers can transform either one.
 
 | Stage | Wraps | Context | Result |
 |-------|-------|---------|--------|
-| [`InvokeModelStage`](@api/python/strands.middleware.stages#InvokeModelStage) | A single model call | [`InvokeModelContext`](@api/python/strands.middleware.stages#InvokeModelContext) | `ModelStopReason` |
-| [`ExecuteToolStage`](@api/python/strands.middleware.stages#ExecuteToolStage) | A single tool call | [`ExecuteToolContext`](@api/python/strands.middleware.stages#ExecuteToolContext) | `ToolResultEvent` |
+| [`InvokeModelStage`](@api/python/strands.middleware.stages#InvokeModelStage) | A single model call | [`InvokeModelContext`](@api/python/strands.middleware.stages#InvokeModelContext) | [`InvokeModelResult`](@api/python/strands.middleware.stages#InvokeModelResult) |
+| [`ExecuteToolStage`](@api/python/strands.middleware.stages#ExecuteToolStage) | A single tool call | [`ExecuteToolContext`](@api/python/strands.middleware.stages#ExecuteToolContext) | [`ExecuteToolResult`](@api/python/strands.middleware.stages#ExecuteToolResult) |
 
 </Tab>
 <Tab label="TypeScript">
@@ -58,7 +58,7 @@ what order you register handlers in:
   decides when (and whether) to call it. Calling `next` zero times short-circuits the
   stage, once passes it through, and more than once retries it.
 - **Output** transforms the result after the stage runs. The handler receives and returns
-  a result wrapper.
+  the stage's result type (`InvokeModelResult` or `ExecuteToolResult`).
 
 Input transforms the context, Wrap wraps the stage (whose work runs inside it), and Output
 transforms the result on the way back out.
@@ -129,7 +129,7 @@ from strands.middleware import InvokeModelStage
 agent = Agent()
 
 def log_stop_reason(result):
-    print(f"model stopped with reason {result.value.stop_reason}")
+    print(f"model stopped with reason {result.result.stop_reason}")
     return result
 
 agent.add_middleware(InvokeModelStage.Output, log_stop_reason)
@@ -170,7 +170,9 @@ async def timing(context, next_fn):
 agent.add_middleware(InvokeModelStage, timing)
 ```
 
-An async generator cannot return a value, so the last event it yields is the stage result.
+An async generator cannot return a value, so the stage result is an event in the stream:
+a `ModelStopReason` for a model call, a `ToolResultEvent` for a tool call. The agent picks
+it out by type, so a handler may yield its own events before or after it.
 
 </Tab>
 <Tab label="TypeScript">
@@ -243,7 +245,7 @@ return the stored result on a hit, and only call the model on a miss.
 ```python
 import json
 from strands import Agent
-from strands.middleware import InvokeModelStage
+from strands.middleware import InvokeModelStage, ModelStopReason
 
 agent = Agent()
 response_cache = {}
@@ -254,17 +256,16 @@ async def cache_responses(context, next_fn):
         yield response_cache[key]
         return
 
-    result_event = None
     async for event in next_fn(context):
-        result_event = event
+        if isinstance(event, ModelStopReason):
+            response_cache[key] = event
         yield event
-    response_cache[key] = result_event
 
 agent.add_middleware(InvokeModelStage, cache_responses)
 ```
 
-Because the last yielded event is the result, the cache stores that final event and yields
-it back on a hit.
+The `ModelStopReason` event is the model call's result, so the cache stores that event and
+yields it back on a hit.
 
 </Tab>
 <Tab label="TypeScript">

@@ -8,8 +8,7 @@ import pytest
 import strands
 from strands import Agent, Plugin
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
-from strands.middleware.stages import ExecuteToolContext, ExecuteToolStage
-from strands.middleware.types import MiddlewareResult
+from strands.middleware.stages import ExecuteToolContext, ExecuteToolResult, ExecuteToolStage
 from strands.types._events import ToolInterruptEvent, ToolResultEvent, ToolStreamEvent
 from strands.types.tools import ToolContext
 from tests.fixtures.mock_hook_provider import MockHookProvider
@@ -365,29 +364,28 @@ def test_context_transform_modified_input_reaches_tool():
 
 
 def test_output_transforms_tool_result(agent):
-    """Output handler receives a MiddlewareResult wrapping the ToolResultEvent and can transform it."""
-    transformed: list[MiddlewareResult] = []
+    """Output handler receives an ExecuteToolResult wrapping the ToolResultEvent and can transform it."""
+    transformed: list[ExecuteToolResult] = []
 
     def output_handler(result):
         transformed.append(result)
-        # result.value is the ToolResultEvent
-        new_tool_result = {**result.value.tool_result, "content": [{"text": "intercepted"}]}
-        return result.replace(value=ToolResultEvent(new_tool_result))
+        new_tool_result = {**result.result.tool_result, "content": [{"text": "intercepted"}]}
+        return ExecuteToolResult(result=ToolResultEvent(new_tool_result))
 
     agent.add_middleware(ExecuteToolStage.Output, output_handler)
     agent("what is 2+2?")
 
     assert len(transformed) == 1
-    assert isinstance(transformed[0], MiddlewareResult)
-    assert transformed[0].value.tool_result["content"] == [{"text": "4"}]
+    assert isinstance(transformed[0], ExecuteToolResult)
+    assert transformed[0].result.tool_result["content"] == [{"text": "4"}]
 
 
 def test_output_transformed_result_reaches_conversation(agent):
     """The transformed Output result is what lands in the conversation history."""
 
     def output_handler(result):
-        new_tool_result = {**result.value.tool_result, "content": [{"text": "intercepted"}]}
-        return result.replace(value=ToolResultEvent(new_tool_result))
+        new_tool_result = {**result.result.tool_result, "content": [{"text": "intercepted"}]}
+        return ExecuteToolResult(result=ToolResultEvent(new_tool_result))
 
     agent.add_middleware(ExecuteToolStage.Output, output_handler)
     agent("what is 2+2?")
@@ -763,7 +761,7 @@ def test_shallow_copy_protects_tool_use_top_level_keys():
 
 def test_output_handler_not_invoked_on_tool_interrupt(calculator_tool):
     """A tool-originated interrupt bypasses the Output handler (it has no result)."""
-    output_calls: list[MiddlewareResult] = []
+    output_calls: list[ExecuteToolResult] = []
 
     @strands.tool(name="interrupting_tool", context=True)
     def interrupting_tool(tool_context) -> str:

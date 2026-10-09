@@ -8,14 +8,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from .types import (
-    InterruptControlEvent,
     MiddlewareHandler,
     MiddlewareInputHandler,
     MiddlewareInputPhase,
     MiddlewareNext,
     MiddlewareOutputHandler,
     MiddlewareOutputPhase,
-    MiddlewareResult,
     MiddlewareStage,
     MiddlewareWrapPhase,
 )
@@ -76,34 +74,22 @@ class MiddlewareRegistry:
     def _add_output(self, phase: MiddlewareOutputPhase[Any, Any, Any], handler: MiddlewareOutputHandler) -> None:
         stage = phase._stage
 
-        # The last event is the stage result: it is held back one step, handed to the handler wrapped
-        # in a MiddlewareResult, and the returned wrapper's value is yielded in its place. An interrupt
-        # event means the stage halted without a result, so the handler must not run and no buffered
-        # non-result event may be mistaken for the result.
+        # The result event is recognized by type, so other events (stream chunks, interrupts, anything
+        # a Wrap handler injects before or after it) flow through untouched and the handler runs only
+        # when the stage actually produced a result.
         async def adapted(context: Any, next_fn: MiddlewareNext) -> AsyncGenerator[Any, None]:
-            last_event = None
-            interrupted = False
             async for event in next_fn(context):
-                if isinstance(event, InterruptControlEvent) and event.is_interrupt:
-                    if last_event is not None:
-                        yield last_event
-                        last_event = None
+                if not isinstance(event, stage.result_event):
                     yield event
-                    interrupted = True
                     continue
-                if last_event is not None:
-                    yield last_event
-                last_event = event
-            if not interrupted and last_event is not None:
-                transformed = handler(MiddlewareResult(value=last_event))
+                transformed = handler(stage.result_type(result=event))
                 if inspect.isawaitable(transformed):
                     transformed = await transformed
-                if not isinstance(transformed, MiddlewareResult):
-                    raise TypeError(f"Output handler must return a MiddlewareResult, got {type(transformed).__name__}")
-                yield transformed.value
-            elif last_event is not None:
-                # Halted after buffering a trailing non-result event: forward it untransformed.
-                yield last_event
+                if not isinstance(transformed, stage.result_type):
+                    raise TypeError(
+                        f"Output handler must return {stage.result_type.__name__}, got {type(transformed).__name__}"
+                    )
+                yield transformed.result
 
         handlers = self._handlers.setdefault(stage, [])
         handlers.append(_TaggedHandler(phase="output", handler=adapted))

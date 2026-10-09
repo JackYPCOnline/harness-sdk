@@ -12,11 +12,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from ..interrupt import _AGENT_STREAM_INTERRUPT_ID_PREFIX, Interrupt
+from ..types._events import EventLoopStopEvent
 from .stages import MiddlewareInterruptResult, _resolve_middleware_interrupt
 from .types import MiddlewareStage
 
 if TYPE_CHECKING:
-    from ..types._events import EventLoopStopEvent, TypedEvent
+    from ..types._events import TypedEvent
     from ..types.agent import LocalAgent
     from ..types.content import Messages
 
@@ -87,12 +88,22 @@ class AgentStreamContext:
         return f"{_AGENT_STREAM_INTERRUPT_ID_PREFIX}{uuid.uuid5(uuid.NAMESPACE_OID, name)}"
 
 
-AgentStreamStage: MiddlewareStage[AgentStreamContext, EventLoopStopEvent, TypedEvent] = MiddlewareStage(
-    name="agentStream"
+@dataclass
+class AgentStreamResult:
+    """Result passed to and returned from ``AgentStreamStage.Output`` handlers.
+
+    Attributes:
+        result: The ``EventLoopStopEvent`` that ends the invocation pass.
+    """
+
+    result: EventLoopStopEvent
+
+
+AgentStreamStage: MiddlewareStage[AgentStreamContext, AgentStreamResult, TypedEvent] = MiddlewareStage(
+    name="agentStream", result_type=AgentStreamResult, result_event=EventLoopStopEvent
 )
 """Built-in stage wrapping the entire agent output stream (outermost interception point).
 
 Middleware registered for this stage can filter, transform, or inject events, short-circuit the
-whole pass, or gate it behind a human-in-the-loop interrupt. The result event is the
-``EventLoopStopEvent`` that ends the pass.
+whole pass, or gate it behind a human-in-the-loop interrupt.
 """

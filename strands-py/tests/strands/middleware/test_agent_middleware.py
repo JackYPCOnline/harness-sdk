@@ -7,9 +7,8 @@ import pytest
 
 from strands import Agent, Plugin
 from strands.hooks import AfterModelCallEvent, BeforeModelCallEvent
-from strands.middleware.stages import InvokeModelContext, InvokeModelStage
-from strands.middleware.types import MiddlewareResult
-from strands.types._events import ModelStopReason
+from strands.middleware.stages import InvokeModelContext, InvokeModelResult, InvokeModelStage
+from strands.types._events import ModelStopReason, TextStreamEvent
 from strands.types.streaming import Metrics, Usage
 from tests.fixtures.mock_hook_provider import MockHookProvider
 from tests.fixtures.mocked_model_provider import MockedModelProvider
@@ -263,6 +262,35 @@ def test_wrap_yields_nothing_raises_runtime_error(agent):
         agent("test")
 
 
+def test_wrap_trailing_event_after_result_is_not_mistaken_for_the_result(agent):
+    """The ModelStopReason is selected by type, so a Wrap handler may yield events after it."""
+    seen_trailing = []
+
+    async def inject_trailing(context, next_fn):
+        async for event in next_fn(context):
+            yield event
+        yield TextStreamEvent("", "done")
+
+    async def observer(context, next_fn):
+        async for event in next_fn(context):
+            if isinstance(event, TextStreamEvent) and event["data"] == "done":
+                seen_trailing.append(event)
+            yield event
+
+    def output_handler(result):
+        output_handler.received = result.result
+        return result
+
+    agent.add_middleware(InvokeModelStage, observer)
+    agent.add_middleware(InvokeModelStage, inject_trailing)
+    agent.add_middleware(InvokeModelStage.Output, output_handler)
+    result = agent("test")
+
+    assert result.message["content"][0]["text"] == "Hello!"
+    assert len(seen_trailing) == 1
+    assert isinstance(output_handler.received, ModelStopReason)
+
+
 def test_wrap_multiple_middleware_compose_correctly(agent):
     order: list[str] = []
 
@@ -359,22 +387,24 @@ def test_input_async_handler(agent):
 
 
 def test_output_transforms_result(agent):
-    """Output handler receives a MiddlewareResult wrapping the result event and can transform it."""
+    """Output handler receives an InvokeModelResult wrapping the ModelStopReason and can transform it."""
     transformed = []
 
     def output_handler(result):
         transformed.append(result)
-        # result.value is the ModelStopReason event
-        stop_reason, message, usage, metrics = result.value["stop"]
-        return result.replace(
-            value=ModelStopReason(stop_reason="custom_stop", message=message, usage=usage, metrics=metrics),
+        event = result.result
+        return InvokeModelResult(
+            result=ModelStopReason(
+                stop_reason="custom_stop", message=event.message, usage=event.usage, metrics=event.metrics
+            )
         )
 
     agent.add_middleware(InvokeModelStage.Output, output_handler)
     result = agent("test")
 
     assert len(transformed) == 1
-    assert isinstance(transformed[0], MiddlewareResult)
+    assert isinstance(transformed[0], InvokeModelResult)
+    assert isinstance(transformed[0].result, ModelStopReason)
     assert result.stop_reason == "custom_stop"
 
 
@@ -382,10 +412,12 @@ def test_output_transformed_message_appended_to_history(agent):
     """The message from a transformed Output result is what lands in agent.messages."""
 
     def output_handler(result):
-        stop_reason, message, usage, metrics = result.value["stop"]
+        event = result.result
         rewritten = {"role": "assistant", "content": [{"text": "rewritten by middleware"}]}
-        return result.replace(
-            value=ModelStopReason(stop_reason=stop_reason, message=rewritten, usage=usage, metrics=metrics),
+        return InvokeModelResult(
+            result=ModelStopReason(
+                stop_reason=event.stop_reason, message=rewritten, usage=event.usage, metrics=event.metrics
+            )
         )
 
     agent.add_middleware(InvokeModelStage.Output, output_handler)
@@ -416,9 +448,11 @@ def test_output_stop_reason_change_prevents_tool_dispatch():
     agent = Agent(model=model, tools=[should_not_run], callback_handler=None)
 
     def force_end_turn(result):
-        stop_reason, message, usage, metrics = result.value["stop"]
-        return result.replace(
-            value=ModelStopReason(stop_reason="end_turn", message=message, usage=usage, metrics=metrics),
+        event = result.result
+        return InvokeModelResult(
+            result=ModelStopReason(
+                stop_reason="end_turn", message=event.message, usage=event.usage, metrics=event.metrics
+            )
         )
 
     agent.add_middleware(InvokeModelStage.Output, force_end_turn)
