@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 # Bound concurrent summarizer calls and advance additional eligible blocks on later passes.
 _BACKGROUND_BATCH_SIZE = 10
+# How often a flush re-checks the agent's cancel signal while waiting on background summaries.
+_CANCEL_POLL_INTERVAL = 0.05
 
 
 @dataclass
@@ -79,10 +81,15 @@ class SummarizeStrategy(BaseOffloadStrategy):
         self._overflow_agents: set[Agent] = set()
 
     def init(self, agent: Agent, stash: Stash | None = None) -> None:
-        """Register eager processing and flush background summaries before session persistence."""
-        super().init(agent, stash)
+        """Register eager processing, or in background mode, a flush that runs before session persistence."""
         if not self._background:
+            super().init(agent, stash)
             return
+
+        # Background tasks are created only during strategy passes, which run inside an invocation, so the
+        # flush below awaits them on the loop that owns them. The eager MessageAddedEvent hook is skipped
+        # because a direct tool call fires it outside an invocation, on a loop that closes right after.
+        self._stash = stash
 
         async def _flush_on_after_invocation(event: AfterInvocationEvent) -> None:
             context = ContextState(messages=event.agent.messages, agent=event.agent, utilization=0, stash=stash)
@@ -250,11 +257,17 @@ class SummarizeStrategy(BaseOffloadStrategy):
         logger.debug("tool_use_id=<%s>, tokens=<%s> | background summarization submitted", tool_use_id, tokens)
 
     async def _flush(self, context: ContextState) -> None:
-        """Wait for one background batch and commit its completed summaries."""
+        """Wait for one background batch and commit its completed summaries, unless the invocation is cancelled."""
         pending = self._pending.get(context.agent)
         if not pending:
             return
-        await asyncio.gather(*(item.task for item in pending.values()), return_exceptions=True)
+        tasks = {item.task for item in pending.values()}
+        cancel_signal = context.agent.cancel_signal
+        while tasks and not cancel_signal.is_set():
+            _, tasks = await asyncio.wait(tasks, timeout=_CANCEL_POLL_INTERVAL)
+        if tasks:
+            await self._cancel_pending(context.agent)
+            return
         self._commit_ready(context)
 
     async def _cancel_pending(self, agent: Agent) -> None:
