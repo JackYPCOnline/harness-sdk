@@ -115,7 +115,7 @@ Preview modes: `"head"`, `"tail"`, <Syntax py='"head_tail"' ts='"headTail"' />.
 
 ### Summarize
 
-Replaces content with an LLM-generated summary.
+Replaces content with an LLM-generated summary. Uses <Syntax py="agent.aux_model" ts="agent.auxModel" /> by default.
 
 <Tabs>
 <Tab label="Python">
@@ -146,12 +146,9 @@ Offload.summarize("*").when(
 
 | Parameter | Key | Default |
 |-----------|-----|---------|
-| Model | `model` | Agent's `aux_model` |
+| Model | `model` | `agent.aux_model` |
 | System prompt | `system_prompt` | Built-in |
 | Background | `background` | `False` |
-
-The [`aux_model`](@api/python/strands.agent.agent#Agent.aux_model) falls back to the
-agent's main model when it is not configured.
 
 Configure a per-block strategy to summarize older tool results concurrently:
 
@@ -179,7 +176,7 @@ This setting does not require `Agent(background_tasks=...)`.
 
 | Parameter | Key | Default |
 |-----------|-----|---------|
-| Model | `model` | Agent's model |
+| Model | `model` | `agent.auxModel` |
 | System prompt | `systemPrompt` | Built-in |
 
 </Tab>
