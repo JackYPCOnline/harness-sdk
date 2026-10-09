@@ -315,6 +315,16 @@ ExecuteToolStage terminal, so middleware always observes a *result*, not a throw
 a tool-raised interrupt still halts. In practice decorated `@tool` tools already self-convert
 their exceptions; this only affects custom `AgentTool`s whose `stream()` raises directly.
 
+## Telemetry records post-middleware state
+
+The tool span and the tool metrics are recorded inside the ExecuteToolStage terminal, as the model
+span is inside the InvokeModelStage terminal and as TS's `_executeToolCore` does. So the span
+carries the `tool_use` and the tool spec the tool actually ran with (after `BeforeToolCallEvent`
+rewrites and Input middleware), a hook cancel or a middleware short-circuit records no span and no
+metrics, a background dispatch acknowledgement records nothing (the background run records its own),
+and a hook-driven retry records one span per attempt. Direct `agent.tool.<name>()` calls record no
+tool span, as in TS.
+
 ## Unknown tools run through the chain
 
 When the model calls a tool that isn't in the registry, the middleware chain still runs — with
