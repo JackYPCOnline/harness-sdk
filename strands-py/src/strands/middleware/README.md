@@ -146,7 +146,7 @@ is out of scope here. Consumers currently disambiguate by the interrupt id prefi
 
 Unlike `InvokeModelContext`/`ExecuteToolContext`, which mirror their TS counterparts field-for-field
 (modulo `camelCase`↔`snake_case`), `AgentStreamContext` genuinely renames: TS exposes `args` +
-`options`, Python exposes `messages` (the input for this pass, already appended to history) +
+`options`, Python exposes `messages` (the input for this pass, appended by the terminal) +
 `invocation_state` (the per-invocation state dict). The rename reflects what Python's `_run_loop`
 actually threads through the pass. Note this drops the extra fields TS's `options` (`InvokeOptions`)
 carries — `cancel_signal`, structured-output config, `limits` — from the agent-stream context;
@@ -157,38 +157,25 @@ the stage is internal, that surface is not yet finalized.
 via `dataclasses.replace()` does not change the signal the tool receives — the executor hands the
 tool the agent's own signal, not the context's copy (matching TS, where the field is `readonly`).
 
-### Transforming `messages` vs `invocation_state`
+### Transforming `messages` and `invocation_state`
 
-The two agent-stream context fields have **different** transform semantics, and only one is fully
-transformable via `dataclasses.replace()`:
+Both agent-stream context fields are read by the terminal, so both are transformable via `replace()`:
 
-- **`invocation_state`** — fully transformable. The terminal reads `ctx.invocation_state`, so a
-  handler returning `replace(context, invocation_state=...)` reaches the event loop and the model.
-- **`messages`** — shared by reference for **in-place** edits only. Mutating a message in place
-  (`context.messages[0]["content"] = ...`) is visible to the model because those same dict objects
-  are already in `agent.messages`. But `replace(context, messages=[...])` is **silently dropped**:
-  the pass's input messages are appended to `agent.messages` *before* the middleware chain runs,
-  and the terminal streams against `agent.messages`, not `ctx.messages`.
+- **`invocation_state`** — the terminal passes `ctx.invocation_state` to the event loop, so a handler
+  returning `replace(context, invocation_state=...)` reaches the event loop and the model.
+- **`messages`** — the terminal appends `ctx.messages` to `agent.messages` as the pass's input, so a
+  handler returning `replace(context, messages=[...])` decides what enters history and reaches the
+  model. In-place edits work too, since the same dict objects are appended.
 
-This asymmetry is deliberate, and it is a consequence of *when* history is appended, which is a
-lifecycle event — not just a middleware concern. Appending the input fires `MessageAddedEvent`
-**before** the AgentStreamStage chain, and it fires **even when a middleware short-circuits** (the
-user turn always lands in history and hooks always observe it). Moving the append into the terminal
-to make `replace(messages=...)` work would change that hook timing for *every* agent (middleware or
-not) and would stop `MessageAddedEvent` firing on short-circuit — an observable behavior change we
-chose not to make. Middleware that must rewrite the input for the model should mutate `messages` in
-place, or use an `InvokeModelStage` Input handler (whose `messages` *are* transformable via
-`replace()`, since that stage's terminal reads them from the context).
-
-**Divergence from TS.** TypeScript makes the opposite trade-off: it appends the input *inside*
-the chain terminal (`_streamCore` → `_stream` normalizes and appends `ctx.args`), so there a
-`{...ctx, args}` swap *does* reach the model — but as a direct consequence, TS's short-circuit
-does **not** append the user message and does **not** fire its `MessageAddedEvent` (the terminal
-never runs), and that hook fires *inside* the chain rather than before it. Python keeps the append
-before the chain so the user turn and its `MessageAddedEvent` are unconditional (including on
-short-circuit), at the cost of `replace(messages=...)` not being honored. Both SDKs keep
-`AgentStreamStage` internal partly because this input contract is not yet finalized. (In both,
-`BeforeInvocationEvent`/`AfterInvocationEvent` bracket the chain from outside and fire regardless.)
+Appending inside the terminal matches TS (`_streamCore` → `_stream` normalizes and appends
+`ctx.args`) and has the same two consequences: the input's `MessageAddedEvent` fires inside the
+chain (after Input handlers, within a Wrap handler's `next_fn`), and a short-circuit appends nothing,
+so neither the user turn nor a response enters history and no `MessageAddedEvent` fires. Agents with
+no agent-stream middleware observe no difference: the chain is the terminal, so the hook order
+(`BeforeInvocationEvent` → `MessageAddedEvent` → model call) is unchanged. Continuation input
+(`AfterInvocationEvent.resume`) was already appended inside the terminal; the pass-1 input now
+follows the same path. `BeforeInvocationEvent`/`AfterInvocationEvent` bracket the chain from
+outside and fire regardless, in both SDKs.
 
 ## AgentStreamStage interrupt resume
 
@@ -339,6 +326,14 @@ Exceptions raised by ExecuteToolStage *middleware* are caught one layer further 
 `ToolExecutor._stream`: they too become an error `ToolResult`, `AfterToolCallEvent` fires with the
 `exception`, and the agent keeps running. TS's concurrent executor matches this; its sequential
 executor rethrows.
+
+## Tool span placement
+
+The tool span and tool metrics are recorded by `ToolExecutor._stream_with_trace`, around the whole
+tool call: hooks, the ExecuteToolStage chain, and the terminal. TS records them inside its terminal
+(`_executeToolCore`), so there the span carries the post-middleware `toolUse` and a short-circuit
+records no span. Moving the Python span into the terminal is a telemetry change for every tracing
+user and is tracked as its own change rather than as part of making the middleware API public.
 
 ## Direct tool calls run through the chain
 

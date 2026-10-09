@@ -30,10 +30,11 @@ class AgentStreamContext:
     can filter, transform, or inject events across a whole invocation pass, or gate the pass
     behind a human-in-the-loop interrupt.
 
-    ``messages`` is the input for this pass, shared by reference (the executor already
-    appended them to history). ``invocation_state`` is likewise shared by reference, matching
-    how hooks and tools receive it. The copy-vs-reference contract is not yet finalized;
-    middleware that needs isolation should copy explicitly.
+    ``messages`` is the input for this pass; the terminal appends it to history, so a replaced
+    list reaches the model and nothing is appended when middleware short-circuits.
+    ``invocation_state`` is shared by reference, matching how hooks and tools receive it. The
+    copy-vs-reference contract is not yet finalized; middleware that needs isolation should
+    copy explicitly.
 
     Supports middleware-initiated interrupts via ``interrupt()`` for human-in-the-loop
     approval flows.

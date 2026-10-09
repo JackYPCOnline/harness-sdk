@@ -273,34 +273,33 @@ def test_input_transforms_context_reaches_event_loop(agent):
     assert marker_seen_by_model
 
 
-def test_messages_in_place_edit_reaches_history_but_replace_is_dropped(agent):
-    """`messages` is shared by reference for in-place edits; `replace(messages=...)` is silently dropped."""
-
-    async def edit_in_place(context, next_fn):
-        context.messages[0]["content"] = [{"text": "mutated-in-place"}]
-        async for event in next_fn(context):
-            yield event
-
-    agent.add_middleware(AgentStreamStage, edit_in_place)
-    agent("original")
-
-    user_texts = [m["content"][0].get("text") for m in agent.messages if m["role"] == "user"]
-    assert user_texts == ["mutated-in-place"]
-
-    # A replace()-swapped list, by contrast, is not honored: history keeps the original input.
-    other_model = MockedModelProvider([{"role": "assistant", "content": [{"text": "ok"}]}])
-    other = Agent(model=other_model, callback_handler=None)
+def test_messages_replace_and_in_place_edit_both_reach_history(agent):
+    """The terminal appends `ctx.messages`, so a replaced list and an in-place edit both land in history."""
 
     async def swap_list(context, next_fn):
         modified = replace(context, messages=[{"role": "user", "content": [{"text": "replaced-list"}]}])
         async for event in next_fn(modified):
             yield event
 
-    other.add_middleware(AgentStreamStage, swap_list)
+    agent.add_middleware(AgentStreamStage, swap_list)
+    agent("original")
+
+    user_texts = [m["content"][0].get("text") for m in agent.messages if m["role"] == "user"]
+    assert user_texts == ["replaced-list"]
+
+    other_model = MockedModelProvider([{"role": "assistant", "content": [{"text": "ok"}]}])
+    other = Agent(model=other_model, callback_handler=None)
+
+    async def edit_in_place(context, next_fn):
+        context.messages[0]["content"] = [{"text": "mutated-in-place"}]
+        async for event in next_fn(context):
+            yield event
+
+    other.add_middleware(AgentStreamStage, edit_in_place)
     other("original")
 
     other_user_texts = [m["content"][0].get("text") for m in other.messages if m["role"] == "user"]
-    assert other_user_texts == ["original"]
+    assert other_user_texts == ["mutated-in-place"]
 
 
 def test_phase_ordering_at_agent_level(agent):
@@ -701,8 +700,8 @@ def test_sequential_agent_stream_interrupts_across_passes():
     assert agent._interrupt_state.interrupts == {}
 
 
-def test_interrupt_message_uses_last_message_when_messages_exist(agent):
-    """The interrupt result message is the last message in history (the user prompt)."""
+def test_interrupt_message_uses_last_message_or_placeholder(agent):
+    """A gate before next_fn stops with the last message in history, or a placeholder when there is none."""
 
     async def gate(context, next_fn):
         context.interrupt("gate")
@@ -713,7 +712,16 @@ def test_interrupt_message_uses_last_message_when_messages_exist(agent):
     result = agent("Test")
 
     assert result.stop_reason == "interrupt"
-    assert result.message == agent.messages[-1]
+    assert agent.messages == []
+    assert result.message == {"role": "assistant", "content": [{"text": "Interrupted"}]}
+
+    prior = {"role": "assistant", "content": [{"text": "earlier turn"}]}
+    agent.messages.append(prior)
+    agent._interrupt_state.deactivate()
+    result = agent("Test again")
+
+    assert result.stop_reason == "interrupt"
+    assert result.message == prior
 
 
 # --- hooks fire outside the middleware chain ---
@@ -770,8 +778,8 @@ def test_after_invocation_hook_fires_when_middleware_short_circuits(agent):
     assert after_fired
 
 
-def test_user_message_added_hook_fires_before_the_chain(agent):
-    """The input MessageAddedEvent fires before the AgentStreamStage chain starts."""
+def test_user_message_added_hook_fires_inside_the_chain(agent):
+    """The input is appended by the terminal, so its MessageAddedEvent fires inside the chain."""
     from strands.hooks import MessageAddedEvent
 
     order: list[str] = []
@@ -787,12 +795,11 @@ def test_user_message_added_hook_fires_before_the_chain(agent):
     agent.add_middleware(AgentStreamStage, middleware)
     agent("Test prompt")
 
-    # The user message is added before the chain starts; the assistant message during it.
-    assert order == ["msg_added:user", "middleware-before", "msg_added:assistant", "middleware-after"]
+    assert order == ["middleware-before", "msg_added:user", "msg_added:assistant", "middleware-after"]
 
 
-def test_user_message_added_hook_fires_even_when_middleware_short_circuits(agent):
-    """The input MessageAddedEvent fires even when middleware short-circuits the pass."""
+def test_short_circuit_appends_nothing_to_history(agent):
+    """When middleware short-circuits the pass, neither the input nor a response enters history."""
     from strands.hooks import MessageAddedEvent
 
     added_roles: list[str] = []
@@ -804,11 +811,11 @@ def test_user_message_added_hook_fires_even_when_middleware_short_circuits(agent
         yield EventLoopStopEvent("end_turn", message, EventLoopMetrics(), {})
 
     agent.add_middleware(AgentStreamStage, short_circuit)
-    agent("Test prompt")
+    result = agent("Test prompt")
 
-    assert added_roles == ["user"]
-    assert agent.messages[-1]["role"] == "user"
-    assert agent.messages[-1]["content"] == [{"text": "Test prompt"}]
+    assert result.message["content"] == [{"text": "Short-circuited"}]
+    assert added_roles == []
+    assert agent.messages == []
 
 
 def test_context_replace_preserves_interrupt(agent):
