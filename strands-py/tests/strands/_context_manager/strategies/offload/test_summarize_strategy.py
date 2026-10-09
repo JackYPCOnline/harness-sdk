@@ -1,7 +1,6 @@
 """Tests for the SummarizeStrategy."""
 
 import asyncio
-import json
 import threading
 import unittest.mock
 
@@ -10,8 +9,7 @@ import pytest
 from strands import Agent, tool
 from strands._context_manager.strategies.offload import Offload
 from strands._context_manager.types import ContextManagerConfig, ContextState
-from strands.agent.conversation_manager.compression.pin_message import pin_message
-from strands.hooks import AfterInvocationEvent, HookOrder
+from strands.hooks import AfterInvocationEvent
 from strands.types.content import ContentBlock, Message, Messages
 from strands.types.tools import ToolResult
 from tests.fixtures.mocked_model_provider import MockedModelProvider
@@ -278,219 +276,82 @@ def _tool_result_message(tool_use_id: str, text: str) -> Message:
     )
 
 
-@pytest.fixture
-def background_agent(mock_agent):
-    async def count_tokens(messages):
-        return 10 if "[Summarized:" in json.dumps(messages, default=str) else 5000
+def _gated_stream(gate: asyncio.Event, text: str = "Summary of content."):
+    async def stream(*args, **kwargs):
+        await gate.wait()
+        async for event in _make_stream_events(text)():
+            yield event
 
-    mock_agent.model.count_tokens = count_tokens
-    return mock_agent
+    return stream
 
 
 class TestSummarizeStrategyBackground:
-    """Tests for background tool result summarization."""
+    """Tests for background (deferred) summarization."""
 
     def test_rejects_utilization_condition(self):
         with pytest.raises(ValueError, match="per-block"):
             Offload.summarize("tool_results", {"background": True}).when(utilization=0.8)
 
     @pytest.mark.asyncio
-    async def test_returns_before_summary_then_commits_at_flush(self, background_agent):
-        started = asyncio.Event()
-        release = asyncio.Event()
-
-        async def stream(*args, **kwargs):
-            started.set()
-            await release.wait()
-            async for event in _make_stream_events("Summary of content.")():
-                yield event
-
-        background_agent.model.stream = stream
+    async def test_apply_defers_then_commits_once_the_summary_is_ready(self, mock_agent):
+        gate = asyncio.Event()
+        mock_agent.model.stream = _gated_stream(gate)
         strategy = Offload.summarize("tool_results", {"background": True}).when(threshold=100)
         messages: Messages = [
             Message(role="user", content=[ContentBlock(text="pin")]),
             _tool_result_message("t1", "x" * 10000),
         ]
-        context = ContextState(messages=messages, agent=background_agent, utilization=0.5)
+        context = ContextState(messages=messages, agent=mock_agent, utilization=0.5)
 
         assert await strategy.apply(context) is False
-        await started.wait()
-        assert "x" * 10000 == messages[1]["content"][0]["toolResult"]["content"][0]["text"]
-        assert not strategy._pending[background_agent]["t1"].task.done()
+        assert messages[1]["content"][0]["toolResult"]["content"] == [{"text": "x" * 10000}]
 
-        release.set()
-        await strategy._flush(context)
+        gate.set()
+        await asyncio.sleep(0)
 
+        assert await strategy.apply(context) is True
         tru_content = messages[1]["content"][0]["toolResult"]["content"]
         exp_content = [{"text": "[Summarized: tool result, ~5,000 tokens]\n\nSummary of content."}]
         assert tru_content == exp_content
-        assert strategy._pending == {}
 
     @pytest.mark.asyncio
-    async def test_commits_one_batch_only_after_every_summary_finishes(self, background_agent):
-        releases = [asyncio.Event(), asyncio.Event()]
-        started = asyncio.Event()
-        calls = 0
-
-        async def stream(*args, **kwargs):
-            nonlocal calls
-            call_index = calls
-            calls += 1
-            if calls == 2:
-                started.set()
-            await releases[call_index].wait()
-            async for event in _make_stream_events(f"summary-{call_index}")():
-                yield event
-
-        background_agent.model.stream = stream
-        strategy = Offload.summarize("tool_results", {"background": True}).when(threshold=100)
-        messages: Messages = [
-            Message(role="user", content=[ContentBlock(text="pin")]),
-            _tool_result_message("t1", "x" * 10000),
-            _tool_result_message("t2", "y" * 10000),
-        ]
-        context = ContextState(messages=messages, agent=background_agent, utilization=0.5)
-        await strategy.apply(context)
-        await started.wait()
-
-        releases[0].set()
-        await strategy._pending[background_agent]["t1"].task
-        assert await strategy.apply(context) is False
-        assert "x" * 10000 == messages[1]["content"][0]["toolResult"]["content"][0]["text"]
-
-        releases[1].set()
-        await strategy._flush(context)
-        tru_summaries = [message["content"][0]["toolResult"]["content"][0]["text"] for message in messages[1:]]
-        exp_summaries = [
-            "[Summarized: tool result, ~5,000 tokens]\n\nsummary-0",
-            "[Summarized: tool result, ~5,000 tokens]\n\nsummary-1",
-        ]
-        assert tru_summaries == exp_summaries
-
-    @pytest.mark.asyncio
-    async def test_discards_summary_when_block_was_replaced(self, background_agent):
+    async def test_overflow_pass_waits_for_the_batch(self, mock_agent):
+        gate = asyncio.Event()
+        gate.set()
+        mock_agent.model.stream = _gated_stream(gate)
         strategy = Offload.summarize("tool_results", {"background": True}).when(threshold=100)
         messages: Messages = [
             Message(role="user", content=[ContentBlock(text="pin")]),
             _tool_result_message("t1", "x" * 10000),
         ]
-        context = ContextState(messages=messages, agent=background_agent, utilization=0.5)
-        await strategy.apply(context)
-        replacement = _tool_result_message("t1", "y" * 10000)["content"][0]
-        messages[1]["content"][0] = replacement
-
-        await strategy._flush(context)
-
-        assert messages[1]["content"][0] is replacement
-        assert strategy._pending == {}
-
-    @pytest.mark.asyncio
-    async def test_discards_summary_when_message_was_pinned(self, background_agent):
-        strategy = Offload.summarize("tool_results", {"background": True}).when(threshold=100)
-        messages: Messages = [
-            Message(role="user", content=[ContentBlock(text="pin")]),
-            _tool_result_message("t1", "x" * 10000),
-        ]
-        context = ContextState(messages=messages, agent=background_agent, utilization=0.5)
-        await strategy.apply(context)
-        pin_message(messages, 1)
-
-        await strategy._flush(context)
-
-        tru_content = messages[1]["content"][0]["toolResult"]["content"]
-        exp_content = [{"text": "x" * 10000}]
-        assert tru_content == exp_content
-        assert strategy._pending == {}
-
-    @pytest.mark.asyncio
-    async def test_overflow_pass_cancels_pending_work_and_summarizes_inline(self, background_agent):
-        release = asyncio.Event()
-
-        async def stream(*args, **kwargs):
-            await release.wait()
-            async for event in _make_stream_events("Summary of content.")():
-                yield event
-
-        background_agent.model.stream = stream
-        strategy = Offload.summarize("tool_results", {"background": True}).when(threshold=100)
-        messages: Messages = [
-            Message(role="user", content=[ContentBlock(text="pin")]),
-            _tool_result_message("t1", "x" * 10000),
-        ]
-        context = ContextState(messages=messages, agent=background_agent, utilization=0.5)
-        await strategy.apply(context)
-        background_task = strategy._pending[background_agent]["t1"].task
-
-        context.overflow = True
-        release.set()
-        assert await strategy.apply(context) is True
-
-        assert background_task.cancelled()
-        assert "Summary of content." in messages[1]["content"][0]["toolResult"]["content"][0]["text"]
-        assert strategy._pending == {}
-
-    @pytest.mark.asyncio
-    async def test_flush_cancels_pending_work_when_invocation_is_cancelled(self, background_agent):
-        release = asyncio.Event()
-
-        async def stream(*args, **kwargs):
-            await release.wait()
-            async for event in _make_stream_events("Summary of content.")():
-                yield event
-
-        background_agent.model.stream = stream
-        strategy = Offload.summarize("tool_results", {"background": True}).when(threshold=100)
-        messages: Messages = [
-            Message(role="user", content=[ContentBlock(text="pin")]),
-            _tool_result_message("t1", "x" * 10000),
-        ]
-        context = ContextState(messages=messages, agent=background_agent, utilization=0.5)
-        await strategy.apply(context)
-        background_task = strategy._pending[background_agent]["t1"].task
-
-        background_agent.cancel_signal.set()
-        await asyncio.wait_for(strategy._flush(context), timeout=5)
-
-        assert background_task.cancelled()
-        tru_content = messages[1]["content"][0]["toolResult"]["content"]
-        exp_content = [{"text": "x" * 10000}]
-        assert tru_content == exp_content
-        assert strategy._pending == {}
-
-    @pytest.mark.asyncio
-    async def test_after_invocation_hook_flushes_before_session_persistence(self, background_agent):
-        strategy = Offload.summarize("tool_results", {"background": True}).when(threshold=100)
-        strategy.init(background_agent)
-        messages: Messages = [
-            Message(role="user", content=[ContentBlock(text="pin")]),
-            _tool_result_message("t1", "x" * 10000),
-        ]
-        background_agent.messages = messages
-        context = ContextState(messages=messages, agent=background_agent, utilization=0.5)
-        await strategy.apply(context)
-
-        callback = background_agent.add_hook.call_args.args[0]
-        tru_registration = (background_agent.add_hook.call_args.args[1], background_agent.add_hook.call_args.kwargs)
-        exp_registration = (AfterInvocationEvent, {"order": HookOrder.SDK_FIRST})
-        assert tru_registration == exp_registration
-
-        await callback(AfterInvocationEvent(agent=background_agent))
-
-        assert "Summary of content." in messages[1]["content"][0]["toolResult"]["content"][0]["text"]
-        assert strategy._pending == {}
-
-    @pytest.mark.asyncio
-    async def test_text_blocks_still_summarize_inline(self, background_agent):
-        strategy = Offload.summarize("*", {"background": True}).when(threshold=100)
-        messages: Messages = [
-            Message(role="user", content=[ContentBlock(text="pin")]),
-            Message(role="assistant", content=[ContentBlock(text="a" * 10000)]),
-        ]
-        context = ContextState(messages=messages, agent=background_agent, utilization=0.5)
+        mock_agent.messages = messages
+        context = ContextState(messages=messages, agent=mock_agent, utilization=1.1, overflow=True)
 
         assert await strategy.apply(context) is True
-        assert "[Summarized:" in messages[1]["content"][0]["text"]
-        assert strategy._pending == {}
+        assert "Summary of content." in messages[1]["content"][0]["toolResult"]["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_flush_applies_the_batch_before_returning(self, mock_agent):
+        gate = asyncio.Event()
+        mock_agent.model.stream = _gated_stream(gate)
+        strategy = Offload.summarize("tool_results", {"background": True}).when(threshold=100)
+        messages: Messages = [
+            Message(role="user", content=[ContentBlock(text="pin")]),
+            _tool_result_message("t1", "x" * 10000),
+        ]
+        mock_agent.messages = messages
+        await strategy.apply(ContextState(messages=messages, agent=mock_agent, utilization=0.5))
+        asyncio.get_running_loop().call_later(0.01, gate.set)
+
+        assert await strategy.flush(mock_agent) is True
+        assert "Summary of content." in messages[1]["content"][0]["toolResult"]["content"][0]["text"]
+
+    def test_init_skips_the_eager_hook(self, mock_agent):
+        mock_agent.hooks = unittest.mock.MagicMock()
+        Offload.summarize("tool_results", {"background": True}).when(threshold=100).init(mock_agent)
+        Offload.summarize("tool_results").when(threshold=100).init(mock_agent)
+
+        assert mock_agent.hooks.add_callback.call_count == 1
 
 
 @tool

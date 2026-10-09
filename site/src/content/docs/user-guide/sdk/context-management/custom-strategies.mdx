@@ -163,11 +163,11 @@ background_tool_results = Offload.summarize(
 
 `background` cannot be combined with a `utilization` condition.
 
-The strategy starts up to 10 summaries per batch and keeps the original tool results
-in context while they run. It replaces the batch before a later model call when every
+The strategy starts up to 10 summaries per batch and keeps the original blocks in
+context while they run. It replaces the batch before a later model call once every
 summary is ready. Otherwise, the invocation waits for the batch and replaces it before
-returning. On overflow, the strategy cancels unfinished work and summarizes inline for
-immediate recovery. Text and media blocks always summarize inline.
+returning, so persisted sessions always hold the summarized form. On overflow, the
+strategy waits for the batch instead of deferring it, so recovery stays immediate.
 
 This setting does not require `Agent(background_tasks=...)`.
 
