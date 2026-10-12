@@ -128,7 +128,7 @@ a2a_server.serve()
 
 The card `name` comes from the config. The card `description` falls back to the agent's `description` when the config omits it. Read the built card from `server.agentCard`.
 
-`serve()` sets the card URL to the bound address, `http://{host}:{port}`, which replaces `httpUrl`. To advertise `httpUrl`, mount `createMiddleware()` in your own Express app instead, as shown in [Custom Applications](#custom-applications).
+`serve()` sets the card URL to the bound address, `http://{host}:{port}`, which replaces `httpUrl`. To advertise `httpUrl`, mount `createMiddleware()` in your own Express app instead, as shown in [Embedding in an Existing App](#embedding-in-an-existing-app).
 
 </Tab>
 </Tabs>
@@ -167,7 +167,11 @@ Overriding `host` or `port` also updates the advertised URL, unless `http_url` w
 </Tab>
 </Tabs>
 
-## Custom Applications
+## Advanced Server Customization
+
+Use these when the `serve()` defaults do not fit your deployment.
+
+### Embedding in an Existing App
 
 Build the server into your own application to add routes, middleware, or lifecycle hooks.
 
@@ -231,7 +235,59 @@ When `http_url` contains a path, both methods return a parent app with the A2A a
 </Tab>
 </Tabs>
 
-## Request Handler Components
+### Path-Based Mounting
+
+Behind a load balancer or reverse proxy, an agent often lives under a path prefix such as `/calculator`.
+
+<Tabs>
+<Tab label="Python">
+
+When `http_url` contains a path, the server mounts the A2A app at that path and advertises the full URL in the agent card.
+
+```python
+from strands import Agent
+from strands.multiagent.a2a import A2AServer
+
+
+def create_agent(context_id: str) -> Agent:
+    return Agent(
+        name="Calculator Agent",
+        description="Evaluates arithmetic expressions",
+        callback_handler=None,
+    )
+
+
+# Serves at /calculator/ and advertises https://my-alb.example.com/calculator/
+a2a_server = A2AServer(
+    agent_factory=create_agent,
+    http_url="https://my-alb.example.com/calculator",
+    enable_a2a_compliant_streaming=True,
+)
+
+# For a load balancer that strips the prefix, serve at / and keep the advertised URL
+root_server = A2AServer(
+    agent_factory=create_agent,
+    http_url="https://my-alb.example.com/calculator",
+    serve_at_root=True,
+    enable_a2a_compliant_streaming=True,
+)
+```
+
+</Tab>
+<Tab label="TypeScript">
+
+Set `httpUrl` to the public URL, then mount `createMiddleware()` at the matching path. The Express app serves the agent card at `/calculator/.well-known/agent-card.json`.
+
+```typescript
+--8<-- "user-guide/sdk/multi-agent/agent-to-agent/server-configuration_imports.ts:express_middleware_imports"
+
+--8<-- "user-guide/sdk/multi-agent/agent-to-agent/server-configuration.ts:path_mounting"
+```
+
+</Tab>
+</Tabs>
+
+### Request Handler Components
 
 Every A2A server uses an in-memory task store by default, so task state is lost on restart. Replace it to persist tasks across restarts or share them across replicas.
 
@@ -292,14 +348,14 @@ Pass any implementation of the `TaskStore` interface from `@a2a-js/sdk/server` a
 </Tab>
 </Tabs>
 
-## Authentication
+### Authentication
 
 The server does not authenticate callers by default. Conversations are keyed on the client-supplied context ID, which is not an authentication boundary: a caller who knows another caller's context ID can attach to that conversation. Enforce authenticated identity in front of the server for multi-tenant deployments.
 
 <Tabs>
 <Tab label="Python">
 
-Add authentication middleware to the app returned by `to_fastapi_app()` or `to_starlette_app()`, or enforce it at a gateway. See [Custom Applications](#custom-applications).
+Add authentication middleware to the app returned by `to_fastapi_app()` or `to_starlette_app()`, or enforce it at a gateway. See [Embedding in an Existing App](#embedding-in-an-existing-app).
 
 </Tab>
 <Tab label="TypeScript">
@@ -310,58 +366,6 @@ Pass a `userBuilder` that resolves the caller from the Express request. The reso
 --8<-- "user-guide/sdk/multi-agent/agent-to-agent/server-configuration_imports.ts:user_builder_imports"
 
 --8<-- "user-guide/sdk/multi-agent/agent-to-agent/server-configuration.ts:user_builder"
-```
-
-</Tab>
-</Tabs>
-
-## Path-Based Mounting
-
-Behind a load balancer or reverse proxy, an agent often lives under a path prefix such as `/calculator`.
-
-<Tabs>
-<Tab label="Python">
-
-When `http_url` contains a path, the server mounts the A2A app at that path and advertises the full URL in the agent card.
-
-```python
-from strands import Agent
-from strands.multiagent.a2a import A2AServer
-
-
-def create_agent(context_id: str) -> Agent:
-    return Agent(
-        name="Calculator Agent",
-        description="Evaluates arithmetic expressions",
-        callback_handler=None,
-    )
-
-
-# Serves at /calculator/ and advertises https://my-alb.example.com/calculator/
-a2a_server = A2AServer(
-    agent_factory=create_agent,
-    http_url="https://my-alb.example.com/calculator",
-    enable_a2a_compliant_streaming=True,
-)
-
-# For a load balancer that strips the prefix, serve at / and keep the advertised URL
-root_server = A2AServer(
-    agent_factory=create_agent,
-    http_url="https://my-alb.example.com/calculator",
-    serve_at_root=True,
-    enable_a2a_compliant_streaming=True,
-)
-```
-
-</Tab>
-<Tab label="TypeScript">
-
-Set `httpUrl` to the public URL, then mount `createMiddleware()` at the matching path. The Express app serves the agent card at `/calculator/.well-known/agent-card.json`.
-
-```typescript
---8<-- "user-guide/sdk/multi-agent/agent-to-agent/server-configuration_imports.ts:express_middleware_imports"
-
---8<-- "user-guide/sdk/multi-agent/agent-to-agent/server-configuration.ts:path_mounting"
 ```
 
 </Tab>
