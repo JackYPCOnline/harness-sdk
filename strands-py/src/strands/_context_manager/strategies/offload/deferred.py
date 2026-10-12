@@ -11,13 +11,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from ....agent.conversation_manager.compression.pin_message import is_pinned
-from ....background_tasks._types import is_task_status_terminal
-from ....background_tasks.in_process._engine import InProcessTaskEngine
-from ....background_tasks.in_process._types import (
-    CancelSignal,
-    InProcessTaskExecutionContext,
-    InProcessTaskExecutionOutcome,
-    InProcessTaskRecord,
+from ....background_tasks.in_process._task_engine import TaskEngine
+from ....background_tasks.in_process._task_types import (
+    TaskCancelSignal,
+    TaskExecutionContext,
+    TaskOutcome,
+    TaskRecord,
+    TaskStatus,
 )
 from ....types.content import ContentBlock, Messages
 
@@ -49,7 +49,7 @@ class _Replacement:
     compute: Callable[[], Awaitable[ContentBlock | None]]
 
 
-_ReplacementRecord = InProcessTaskRecord[_Replacement, "ContentBlock | None"]
+_ReplacementRecord = TaskRecord[_Replacement, "ContentBlock | None"]
 
 
 class DeferredReplacements:
@@ -114,7 +114,7 @@ class DeferredReplacements:
     def commit(self, messages: Messages) -> bool:
         """Swap the finished batch into ``messages``. Returns True if any block changed."""
         records = self._engine.list()
-        if not records or any(not is_task_status_terminal(record["status"]) for record in records):
+        if not records or any(not _is_task_status_terminal(record["status"]) for record in records):
             return False
         self._engine_remove(records)
         self._track_failures(records)
@@ -136,7 +136,7 @@ class DeferredReplacements:
         """Wait for the batch and commit it, or drop it if the invocation is cancelled or the deadline passes."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._flush_timeout
-        idle_signal = CancelSignal()
+        idle_signal = TaskCancelSignal()
         waiter = asyncio.ensure_future(self._engine.wait_for_idle(cancel_signal=idle_signal))
         try:
             while not waiter.done():
@@ -164,8 +164,8 @@ class DeferredReplacements:
             self._consecutive_failures += 1
         logger.debug("count=<%s>, reason=<%s> | deferred replacements dropped", len(records), reason)
 
-    def _new_engine(self) -> InProcessTaskEngine[_Replacement, ContentBlock | None]:
-        return InProcessTaskEngine(
+    def _new_engine(self) -> TaskEngine[_Replacement, ContentBlock | None]:
+        return TaskEngine(
             max_concurrency=self._options.max_concurrency,
             timeout=self._options.task_timeout,
             execute=_execute,
@@ -197,8 +197,8 @@ class DeferredReplacements:
 
 
 async def _execute(
-    context: InProcessTaskExecutionContext[_Replacement],
-) -> InProcessTaskExecutionOutcome[ContentBlock | None]:
+    context: TaskExecutionContext[_Replacement],
+) -> TaskOutcome[ContentBlock | None]:
     """Run one replacement, abandoning it as soon as the engine times it out or cancels it.
 
     A model call has no way to observe the engine's cancel signal, so the compute is raced against it
@@ -231,6 +231,10 @@ async def _execute(
         context.cancel_signal.remove_abort_callback(on_abort)
         if not aborted.done():
             aborted.cancel()
+
+
+def _is_task_status_terminal(status: TaskStatus) -> bool:
+    return status in {"completed", "failed", "cancelled"}
 
 
 def _locate(messages: Messages, block: ContentBlock) -> tuple[int, int] | None:
