@@ -11,8 +11,8 @@ from strands.background_tasks._errors import BackgroundTaskNotFoundError
 from strands.background_tasks._types import BackgroundTaskError
 from strands.types.tools import ToolResult
 
-from ._scheduler import TaskNotFoundError, _TaskScheduler
-from ._scheduler import _timestamp as _task_timestamp
+from ._task_engine import TaskEngine, TaskNotFoundError
+from ._task_engine import _timestamp as _task_timestamp
 from ._task_types import TaskExecutionContext, TaskOutcome, TaskRecord
 from ._types import (
     CancelSignal,
@@ -37,7 +37,7 @@ class InProcessTaskEngine:
     """Run and track bounded tool-shaped tasks.
 
     This compatibility facade preserves the original background-task engine contract while
-    delegating scheduling to the generic task scheduler.
+    delegating scheduling to the generic ``TaskEngine``.
     """
 
     def __init__(
@@ -77,7 +77,7 @@ class InProcessTaskEngine:
         def notify(record: _ToolTaskRecord) -> None:
             on_task_updated(_to_legacy_record(record))
 
-        self._engine = _TaskScheduler[_ToolTaskInput, ToolResult](
+        self._engine = TaskEngine[_ToolTaskInput, ToolResult](
             max_concurrency=max_concurrency,
             timeout=timeout,
             execute=execute_task,
