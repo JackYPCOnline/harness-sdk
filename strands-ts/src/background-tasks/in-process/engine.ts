@@ -1,7 +1,7 @@
 import type { InterruptStateData } from '../../interrupt.js'
 import type { ToolResultBlockData } from '../../types/messages.js'
 import { BackgroundTaskNotFoundError } from '../errors.js'
-import { TaskEngine, TaskNotFoundError } from './task-engine.js'
+import { TaskNotFoundError, TaskScheduler } from './scheduler.js'
 import type { TaskExecutionContext, TaskOutcome, TaskRecord } from './task-types.js'
 import type { BackgroundTaskFailureType } from '../types.js'
 import type { InProcessTaskEngineOptions, InProcessTaskRecord } from './types.js'
@@ -18,12 +18,12 @@ type ToolTaskRecord = TaskRecord<ToolTaskInput, ToolResultBlockData>
  * Runs and tracks bounded tool-shaped tasks.
  *
  * This compatibility facade preserves the original background-task engine contract while delegating
- * scheduling to the generic {@link TaskEngine}.
+ * scheduling to the private task scheduler.
  *
  * @internal
  */
 export class InProcessTaskEngine {
-  private readonly _engine: TaskEngine<ToolTaskInput, ToolResultBlockData>
+  private readonly _engine: TaskScheduler<ToolTaskInput, ToolResultBlockData>
 
   /**
    * Creates an in-process task engine.
@@ -46,7 +46,7 @@ export class InProcessTaskEngine {
       return globalThis.structuredClone(outcome)
     }
 
-    this._engine = new TaskEngine({
+    this._engine = new TaskScheduler({
       maxConcurrency: options.maxConcurrency,
       timeout: options.timeout,
       execute,
