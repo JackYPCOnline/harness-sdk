@@ -15,12 +15,12 @@ from strands.types.tools import ToolResult
 
 
 def create_engine(
-    execute: Callable[[InProcessTaskExecutionContext], Awaitable[InProcessTaskExecutionOutcome]],
+    execute: Callable[[InProcessTaskExecutionContext[str]], Awaitable[InProcessTaskExecutionOutcome[ToolResult]]],
     *,
     max_concurrency: int = 2,
     timeout: float = 1.0,
-    on_task_updated: Callable[[InProcessTaskRecord], None] | None = None,
-) -> InProcessTaskEngine:
+    on_task_updated: Callable[[InProcessTaskRecord[str, ToolResult]], None] | None = None,
+) -> InProcessTaskEngine[str, ToolResult]:
     return InProcessTaskEngine(
         max_concurrency=max_concurrency,
         timeout=timeout,
@@ -29,12 +29,8 @@ def create_engine(
     )
 
 
-def create_admission(value: str) -> dict[str, str]:
-    return {
-        "tool_use_id": value,
-        "tool_name": value,
-        "invocation_state_id": value,
-    }
+def create_admission(value: str) -> str:
+    return value
 
 
 def create_result(value: str) -> ToolResult:
@@ -62,15 +58,13 @@ def get_state_value(state: dict[str, Any]) -> str:
 
 
 def assert_task(
-    actual: InProcessTaskRecord | None,
-    task: InProcessTaskRecord,
+    actual: InProcessTaskRecord[str, ToolResult] | None,
+    task: InProcessTaskRecord[str, ToolResult],
     fields: dict[str, Any],
 ) -> None:
     exp_task = {
         "task_id": task["task_id"],
-        "tool_use_id": task["tool_use_id"],
-        "tool_name": task["tool_name"],
-        "invocation_state_id": task["invocation_state_id"],
+        "input": task["input"],
         **fields,
         "created_at": task["created_at"],
         "last_updated_at": ANY,
@@ -79,8 +73,8 @@ def assert_task(
 
 
 def deferred() -> tuple[
-    asyncio.Future[InProcessTaskExecutionOutcome],
-    Callable[[InProcessTaskExecutionOutcome], None],
+    asyncio.Future[InProcessTaskExecutionOutcome[ToolResult]],
+    Callable[[InProcessTaskExecutionOutcome[ToolResult]], None],
 ]:
     future = asyncio.get_running_loop().create_future()
     return future, future.set_result
