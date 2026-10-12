@@ -19,12 +19,6 @@ The [Agent-to-Agent (A2A) protocol](https://a2aproject.github.io/A2A/latest/) le
 
 The Agent-to-Agent protocol is an open standard that defines how AI agents can discover, communicate, and collaborate with each other.
 
-### Agent Card
-
-An agent card is the JSON document an A2A server publishes at `/.well-known/agent-card.json` to describe its agent: name, description, URL, version, skills, and capabilities. Clients read the card to discover an agent before sending it messages.
-
-Strands handles both sides. `A2AAgent` fetches and caches the card of the remote agent it calls (see [Fetching the Agent Card](#fetching-the-agent-card)). The A2A server builds its card from your agent and server options (see [Agent Card](server-configuration.md#agent-card) to customize it).
-
 ### Use Cases
 
 A2A support covers several patterns:
@@ -42,6 +36,12 @@ Learn more about the A2A protocol:
 :::tip[Complete Examples Available]
 Check out the [Native A2A Support samples](https://github.com/strands-agents/samples/tree/main/python/03-integrate/protocols/a2a-native) for complete, ready-to-run client, server and tool implementations.
 :::
+
+### Agent Card
+
+An agent card is the JSON document an A2A server publishes at `/.well-known/agent-card.json` to describe its agent: name, description, URL, version, skills, and capabilities. Clients read the card to discover an agent before sending it messages.
+
+Strands handles both sides. `A2AAgent` fetches and caches the card of the remote agent it calls (see [Fetching the Agent Card](#fetching-the-agent-card)). The A2A server builds its card from your agent and server options (see [Agent Card](server-configuration.md#agent-card) to customize it).
 
 ## Installation
 
