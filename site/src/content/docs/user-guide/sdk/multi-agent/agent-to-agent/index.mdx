@@ -89,7 +89,7 @@ print(result.message)
 ```typescript
 import { A2AAgent } from '@strands-agents/sdk/a2a'
 
---8<-- "user-guide/sdk/multi-agent/agent-to-agent.ts:basic_usage"
+--8<-- "user-guide/sdk/multi-agent/agent-to-agent/agent-to-agent.ts:basic_usage"
 ```
 
 </Tab>
@@ -193,7 +193,7 @@ asyncio.run(main())
 <Tab label="TypeScript">
 
 ```typescript
---8<-- "user-guide/sdk/multi-agent/agent-to-agent.ts:streaming"
+--8<-- "user-guide/sdk/multi-agent/agent-to-agent/agent-to-agent.ts:streaming"
 ```
 
 `A2AAgent.stream()` uses `sendMessageStream` from the A2A SDK. It yields `A2AStreamUpdateEvent` for each protocol event (messages, task status updates, artifact updates) followed by an `AgentResultEvent` with the final result.
@@ -232,7 +232,7 @@ The agent card is fetched and cached internally on the first `invoke()` or `stre
 
 ## A2AAgent in Multi-Agent Patterns
 
-The `A2AAgent` class integrates with Strands multi-agent patterns that support it. Currently, you can use remote A2A agents in [Graph](graph.md) workflows (Python only) and as [tools in an orchestrator agent](#as-a-tool).
+The `A2AAgent` class integrates with Strands multi-agent patterns that support it. Currently, you can use remote A2A agents in [Graph](../graph.md) workflows (Python only) and as [tools in an orchestrator agent](#as-a-tool).
 
 ### As a Tool
 
@@ -266,7 +266,7 @@ orchestrator = Agent(
 <Tab label="TypeScript">
 
 ```typescript
---8<-- "user-guide/sdk/multi-agent/agent-to-agent.ts:as_tool"
+--8<-- "user-guide/sdk/multi-agent/agent-to-agent/agent-to-agent.ts:as_tool"
 ```
 
 </Tab>
@@ -274,12 +274,12 @@ orchestrator = Agent(
 
 ### In Graph Workflows
 
-The `A2AAgent` works as a node in [Graph](graph.md) workflows. See [Remote Agents with A2AAgent](graph.md#remote-agents-with-a2aagent) for detailed examples of mixing local and remote agents in graph-based pipelines.
+The `A2AAgent` works as a node in [Graph](../graph.md) workflows. See [Remote Agents with A2AAgent](../graph.md#remote-agents-with-a2aagent) for detailed examples of mixing local and remote agents in graph-based pipelines.
 
 ### In Swarm Patterns
 
 :::note[Not yet supported]
-`A2AAgent` is not currently supported in Swarm patterns in either SDK. Swarm coordination relies on tool-based handoffs that require capabilities not yet available in the A2A protocol. Use [Graph](graph.md) workflows for multi-agent patterns with remote A2A agents.
+`A2AAgent` is not currently supported in Swarm patterns in either SDK. Swarm coordination relies on tool-based handoffs that require capabilities not yet available in the A2A protocol. Use [Graph](../graph.md) workflows for multi-agent patterns with remote A2A agents.
 :::
 
 ## Creating an A2A Server
@@ -322,7 +322,7 @@ a2a_server.serve()
 import { Agent } from '@strands-agents/sdk'
 import { A2AExpressServer } from '@strands-agents/sdk/a2a/express'
 
---8<-- "user-guide/sdk/multi-agent/agent-to-agent.ts:basic_server"
+--8<-- "user-guide/sdk/multi-agent/agent-to-agent/agent-to-agent.ts:basic_server"
 ```
 
 </Tab>
@@ -363,7 +363,7 @@ a2a_server.serve()
 import { Agent, SessionManager, FileStorage } from '@strands-agents/sdk'
 import { A2AExpressServer } from '@strands-agents/sdk/a2a/express'
 
---8<-- "user-guide/sdk/multi-agent/agent-to-agent.ts:factory_server"
+--8<-- "user-guide/sdk/multi-agent/agent-to-agent/agent-to-agent.ts:factory_server"
 ```
 
 </Tab>
@@ -385,7 +385,7 @@ In single-agent mode the server reuses one agent across every context, swapping 
 This feature is currently available in the Python SDK only.
 :::
 
-When a tool or hook on the served agent raises an [interrupt](../interrupts.md), the task moves to the A2A `input_required` state and waits. The client answers it, and the task resumes the paused tool exactly where it stopped.
+When a tool or hook on the served agent raises an [interrupt](../../interrupts.md), the task moves to the A2A `input_required` state and waits. The client answers it, and the task resumes the paused tool exactly where it stopped.
 
 Answering an interrupt is the one flow on this page that needs the raw [`a2a-sdk`](https://github.com/a2aproject/a2a-python) client rather than `A2AAgent`. `A2AAgent` speaks in text, so it raises `ValueError` if you pass it interrupt responses, and it drops the `DataPart` carrying the interrupt ids when it reads the reply. The examples below build A2A messages directly.
 
@@ -457,7 +457,7 @@ A `DataPart` without an `interruptResponse` key is unaffected and continues to r
 
 ### Server Configuration and Deployment
 
-The `A2AServer` (Python) and `A2AExpressServer` (TypeScript) expose the full set of constructor options, custom task stores and request-handler components, and path-based mounting for load-balanced deployments. See [A2A Server Configuration](a2a-server-configuration.md) for the complete reference.
+The `A2AServer` (Python) and `A2AExpressServer` (TypeScript) expose the full set of constructor options, custom task stores and request-handler components, and path-based mounting for load-balanced deployments. See [A2A Server Configuration](server-configuration.md) for the complete reference.
 
 
 ## Troubleshooting
