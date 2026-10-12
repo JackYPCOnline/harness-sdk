@@ -80,7 +80,7 @@ Provide exactly one of `agentFactory` or `agent`; otherwise the constructor thro
 
 ## Agent Card
 
-The server publishes its agent card at `/.well-known/agent-card.json`. When you pass an agent factory, the server calls it once at construction with the placeholder context ID `__agent_card__` to read card metadata. That agent never handles requests, so keep the factory free of expensive side effects.
+The server builds the [agent card](index.md#agent-card) that clients use to discover it. When you pass an agent factory, the server calls it once at construction with the placeholder context ID `__agent_card__` to read card metadata. That agent never handles requests, so keep the factory free of expensive side effects.
 
 <Tabs>
 <Tab label="Python">

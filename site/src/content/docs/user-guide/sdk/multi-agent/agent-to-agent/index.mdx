@@ -19,6 +19,12 @@ The [Agent-to-Agent (A2A) protocol](https://a2aproject.github.io/A2A/latest/) le
 
 The Agent-to-Agent protocol is an open standard that defines how AI agents can discover, communicate, and collaborate with each other.
 
+### Agent Card
+
+An agent card is the JSON document an A2A server publishes at `/.well-known/agent-card.json` to describe its agent: name, description, URL, version, skills, and capabilities. Clients read the card to discover an agent before sending it messages.
+
+Strands handles both sides. `A2AAgent` fetches and caches the card of the remote agent it calls (see [Fetching the Agent Card](#fetching-the-agent-card)). The A2A server builds its card from your agent and server options (see [Agent Card](server-configuration.md#agent-card) to customize it).
+
 ### Use Cases
 
 A2A support covers several patterns:
@@ -128,7 +134,7 @@ The `A2AAgent` constructor accepts a config object with these properties.
 | `description` | `string` | From agent card | Agent description (auto-populated from agent card if not provided) |
 | `clientFactory` | `ClientFactory` | None | Custom A2A client factory for authenticating requests (SigV4, bearer token) |
 
-The agent card is fetched lazily on the first `invoke()` or `stream()` call.
+The agent card is fetched lazily on the first `invoke()`, `stream()`, or `getAgentCard()` call.
 
 </Tab>
 </Tabs>
@@ -206,7 +212,7 @@ asyncio.run(main())
 <Tabs>
 <Tab label="Python">
 
-You can retrieve the remote agent's metadata using `get_agent_card`:
+Retrieve the remote agent's card with `get_agent_card()`. The card is fetched once and cached.
 
 ```python
 import asyncio
@@ -225,7 +231,13 @@ asyncio.run(main())
 </Tab>
 <Tab label="TypeScript">
 
-The agent card is fetched and cached internally on the first `invoke()` or `stream()` call. There is no separate public method to retrieve it.
+Retrieve the remote agent's card with `getAgentCard()`. The card is fetched once and cached.
+
+```typescript
+import { A2AAgent } from '@strands-agents/sdk/a2a'
+
+--8<-- "user-guide/sdk/multi-agent/agent-to-agent/agent-to-agent.ts:fetch_agent_card"
+```
 
 </Tab>
 </Tabs>
