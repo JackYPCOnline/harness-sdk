@@ -8,12 +8,13 @@ import {
   expectTask,
   getStateValue,
 } from './engine-test-helpers.js'
+import type { ToolResultBlockData } from '../../../types/messages.js'
 import type { InProcessTaskExecutionOutcome } from '../types.js'
 
 describe('InProcessTaskEngine', () => {
   describe('waiting and transitions', () => {
     it('cancels idle observation without cancelling work', async () => {
-      const finish = deferred<InProcessTaskExecutionOutcome>()
+      const finish = deferred<InProcessTaskExecutionOutcome<ToolResultBlockData>>()
       const engine = createEngine(async () => finish.promise)
       const task = engine.submit(createAdmission('work'))
       const idleController = new AbortController()
@@ -55,7 +56,7 @@ describe('InProcessTaskEngine', () => {
     })
 
     it('cancels running work and removes it before execution settles', async () => {
-      const finish = deferred<InProcessTaskExecutionOutcome>()
+      const finish = deferred<InProcessTaskExecutionOutcome<ToolResultBlockData>>()
       let executionSignal: AbortSignal | undefined
       const engine = createEngine(async ({ cancelSignal }) => {
         executionSignal = cancelSignal
@@ -75,11 +76,11 @@ describe('InProcessTaskEngine', () => {
     })
 
     it('cancels queued work without executing it', async () => {
-      const finish = deferred<InProcessTaskExecutionOutcome>()
+      const finish = deferred<InProcessTaskExecutionOutcome<ToolResultBlockData>>()
       const executions: string[] = []
       const engine = createEngine(
-        async ({ toolName }) => {
-          executions.push(toolName)
+        async ({ input }) => {
+          executions.push(input)
           return finish.promise
         },
         { maxConcurrency: 1 }
@@ -96,7 +97,7 @@ describe('InProcessTaskEngine', () => {
     })
 
     it('rejects invalid execution configuration', () => {
-      const complete = async (): Promise<InProcessTaskExecutionOutcome> => ({
+      const complete = async (): Promise<InProcessTaskExecutionOutcome<ToolResultBlockData>> => ({
         status: 'completed',
         result: createResult('done'),
       })

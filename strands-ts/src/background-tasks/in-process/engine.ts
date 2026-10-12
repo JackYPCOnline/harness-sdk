@@ -12,10 +12,17 @@ interface ActiveExecution {
   timeout?: ReturnType<typeof setTimeout>
 }
 
-/** Runs and tracks bounded in-process tasks. @internal */
-export class InProcessTaskEngine {
-  private readonly _options: InProcessTaskEngineOptions
-  private readonly _tasks = new Map<string, InProcessTaskRecord>()
+/**
+ * Runs and tracks bounded in-process tasks.
+ *
+ * The engine owns scheduling, concurrency, timeouts, cancellation, and status; it never interprets the
+ * task payload. `execute` receives the submitted `TInput` and returns a `TResult` on completion.
+ *
+ * @internal
+ */
+export class InProcessTaskEngine<TInput, TResult> {
+  private readonly _options: InProcessTaskEngineOptions<TInput, TResult>
+  private readonly _tasks = new Map<string, InProcessTaskRecord<TInput, TResult>>()
   private readonly _queue = new Set<string>()
   private readonly _activeExecutions = new Map<string, ActiveExecution>()
   private readonly _idleWaiters = new Set<() => void>()
@@ -26,7 +33,7 @@ export class InProcessTaskEngine {
    * @param options - Execution limits and callbacks supplied by the task manager.
    * @throws TypeError if the concurrency or timeout configuration is invalid.
    */
-  constructor(options: InProcessTaskEngineOptions) {
+  constructor(options: InProcessTaskEngineOptions<TInput, TResult>) {
     if (!Number.isSafeInteger(options.maxConcurrency) || options.maxConcurrency <= 0) {
       throw new TypeError(`maxConcurrency must be a positive finite integer, got ${options.maxConcurrency}`)
     }
@@ -37,18 +44,16 @@ export class InProcessTaskEngine {
   /**
    * Submits a task for execution.
    *
-   * @param admission - Tool execution details.
+   * The input is stored on the record by reference and must stay immutable while the task is tracked.
+   *
+   * @param input - The payload `execute` receives for this task.
    * @returns A snapshot of the admitted task.
    */
-  submit(admission: {
-    readonly toolUseId: string
-    readonly toolName: string
-    readonly invocationStateId: string
-  }): InProcessTaskRecord {
+  submit(input: TInput): InProcessTaskRecord<TInput, TResult> {
     const now = new Date().toISOString()
-    const stored: InProcessTaskRecord = {
+    const stored: InProcessTaskRecord<TInput, TResult> = {
       taskId: globalThis.crypto.randomUUID(),
-      ...admission,
+      input,
       status: 'queued',
       createdAt: now,
       lastUpdatedAt: now,
@@ -56,7 +61,7 @@ export class InProcessTaskEngine {
     this._tasks.set(stored.taskId, stored)
     this._notifyTaskUpdated(stored)
     this._scheduleTask(stored.taskId)
-    return globalThis.structuredClone(stored)
+    return snapshot(stored)
   }
 
   /**
@@ -65,9 +70,9 @@ export class InProcessTaskEngine {
    * @param taskId - ID of the task to retrieve.
    * @returns A snapshot of the task, or `undefined` when it does not exist.
    */
-  get(taskId: string): InProcessTaskRecord | undefined {
+  get(taskId: string): InProcessTaskRecord<TInput, TResult> | undefined {
     const task = this._tasks.get(taskId)
-    return task ? globalThis.structuredClone(task) : undefined
+    return task ? snapshot(task) : undefined
   }
 
   /**
@@ -75,8 +80,8 @@ export class InProcessTaskEngine {
    *
    * @returns Snapshots of the tracked tasks.
    */
-  list(): readonly InProcessTaskRecord[] {
-    return [...this._tasks.values()].map((task) => globalThis.structuredClone(task))
+  list(): readonly InProcessTaskRecord<TInput, TResult>[] {
+    return [...this._tasks.values()].map((task) => snapshot(task))
   }
 
   /**
@@ -101,9 +106,9 @@ export class InProcessTaskEngine {
    * @returns A snapshot of the cancelled task, or the unchanged task if it was already terminal.
    * @throws Error if the task does not exist.
    */
-  cancel(taskId: string, options: { readonly reason: string }): InProcessTaskRecord {
+  cancel(taskId: string, options: { readonly reason: string }): InProcessTaskRecord<TInput, TResult> {
     const current = this._requireTask(taskId)
-    if (isTaskStatusTerminal(current.status)) return globalThis.structuredClone(current)
+    if (isTaskStatusTerminal(current.status)) return snapshot(current)
     const task = this._updateTask(taskId, (record) => {
       record.status = 'cancelled'
       delete record.state
@@ -163,7 +168,7 @@ export class InProcessTaskEngine {
       readonly state: InterruptStateData
       readonly ready: boolean
     }
-  ): InProcessTaskRecord {
+  ): InProcessTaskRecord<TInput, TResult> {
     const task = this._updateTask(taskId, (record) => {
       if (record.status !== 'input_required') {
         throw new Error(
@@ -223,13 +228,11 @@ export class InProcessTaskEngine {
       }, this._options.timeout)
     }
 
-    let outcome: InProcessTaskExecutionOutcome
+    let outcome: InProcessTaskExecutionOutcome<TResult>
     try {
       outcome = await this._options.execute({
         taskId,
-        toolUseId: working.toolUseId,
-        toolName: working.toolName,
-        invocationStateId: working.invocationStateId,
+        input: working.input,
         ...(working.state !== undefined && { state: working.state }),
         cancelSignal: activeExecution.controller.signal,
       })
@@ -245,7 +248,7 @@ export class InProcessTaskEngine {
     this._finishOutcome(taskId, outcome)
   }
 
-  private _finishOutcome(taskId: string, outcome: InProcessTaskExecutionOutcome): void {
+  private _finishOutcome(taskId: string, outcome: InProcessTaskExecutionOutcome<TResult>): void {
     if (outcome.status === 'input_required') {
       this._updateTask(taskId, (record) => {
         if (record.status !== 'working') return false
@@ -292,28 +295,31 @@ export class InProcessTaskEngine {
     if (task) activeExecution.controller.abort(reason)
   }
 
-  private _updateTask(taskId: string, update: (task: InProcessTaskRecord) => boolean): InProcessTaskRecord | undefined {
+  private _updateTask(
+    taskId: string,
+    update: (task: InProcessTaskRecord<TInput, TResult>) => boolean
+  ): InProcessTaskRecord<TInput, TResult> | undefined {
     const current = this._requireTask(taskId)
 
-    const next = globalThis.structuredClone(current)
+    const next = snapshot(current)
     if (!update(next)) return undefined
 
     next.lastUpdatedAt = new Date().toISOString()
-    const stored = globalThis.structuredClone(next)
+    const stored = snapshot(next)
     this._tasks.set(taskId, stored)
     this._notifyTaskUpdated(stored)
 
-    return globalThis.structuredClone(stored)
+    return snapshot(stored)
   }
 
-  private _requireTask(taskId: string): InProcessTaskRecord {
+  private _requireTask(taskId: string): InProcessTaskRecord<TInput, TResult> {
     const task = this._tasks.get(taskId)
     if (!task) throw new BackgroundTaskNotFoundError(taskId)
     return task
   }
 
-  private _notifyTaskUpdated(task: InProcessTaskRecord): void {
-    const taskSnapshot = globalThis.structuredClone(task)
+  private _notifyTaskUpdated(task: InProcessTaskRecord<TInput, TResult>): void {
+    const taskSnapshot = snapshot(task)
     void Promise.resolve()
       .then(() => this._options.onTaskUpdated(taskSnapshot))
       .catch(() => undefined)
@@ -322,6 +328,15 @@ export class InProcessTaskEngine {
   private _wakeIdleWaiters(): void {
     for (const resolve of this._idleWaiters) resolve()
     this._idleWaiters.clear()
+  }
+}
+
+/** Copies the engine-owned fields; `input` and `result` belong to the consumer and are shared by reference. */
+function snapshot<TInput, TResult>(record: InProcessTaskRecord<TInput, TResult>): InProcessTaskRecord<TInput, TResult> {
+  return {
+    ...record,
+    ...(record.state !== undefined && { state: globalThis.structuredClone(record.state) }),
+    ...(record.failure !== undefined && { failure: { ...record.failure } }),
   }
 }
 

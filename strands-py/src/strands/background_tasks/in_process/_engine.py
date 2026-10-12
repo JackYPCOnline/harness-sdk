@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
+from typing import Generic
 from uuid import uuid4
 
 from strands.background_tasks._errors import BackgroundTaskNotFoundError
@@ -22,6 +23,8 @@ from ._types import (
     InProcessTaskExecutionOutcome,
     InProcessTaskRecord,
     InterruptStateData,
+    TInput,
+    TResult,
 )
 
 _DEFAULT_EXECUTION_FAILURE_MESSAGE = "Background task execution failed"
@@ -33,16 +36,21 @@ class _ActiveExecution:
     timeout_handle: asyncio.TimerHandle | None = None
 
 
-class InProcessTaskEngine:
-    """Run and track bounded in-process tasks."""
+class InProcessTaskEngine(Generic[TInput, TResult]):
+    """Run and track bounded in-process tasks.
+
+    The engine owns scheduling, concurrency, timeouts, cancellation, and status; it never
+    interprets the task payload. ``execute`` receives the submitted ``TInput`` and returns a
+    ``TResult`` on completion, so each consumer brings its own types.
+    """
 
     def __init__(
         self,
         *,
         max_concurrency: int,
         timeout: float,
-        execute: Callable[[InProcessTaskExecutionContext], Awaitable[InProcessTaskExecutionOutcome]],
-        on_task_updated: Callable[[InProcessTaskRecord], None],
+        execute: Callable[[InProcessTaskExecutionContext[TInput]], Awaitable[InProcessTaskExecutionOutcome[TResult]]],
+        on_task_updated: Callable[[InProcessTaskRecord[TInput, TResult]], None],
     ) -> None:
         """Initialize the engine.
 
@@ -63,20 +71,21 @@ class InProcessTaskEngine:
         self._timeout = timeout
         self._execute_callback = execute
         self._on_task_updated = on_task_updated
-        self._tasks: dict[str, InProcessTaskRecord] = {}
+        self._tasks: dict[str, InProcessTaskRecord[TInput, TResult]] = {}
         self._queue: dict[str, None] = {}
         self._active_executions: dict[str, _ActiveExecution] = {}
         self._idle_waiters: set[asyncio.Future[None]] = set()
         self._spawned_tasks: set[asyncio.Task[None]] = set()
 
-    def submit(self, *, tool_use_id: str, tool_name: str, invocation_state_id: str) -> InProcessTaskRecord:
-        """Submit a task for execution."""
+    def submit(self, input: TInput) -> InProcessTaskRecord[TInput, TResult]:
+        """Submit a task for execution.
+
+        The input is stored on the record by reference and must stay immutable while the task is tracked.
+        """
         now = _timestamp()
-        stored = InProcessTaskRecord(
+        stored = InProcessTaskRecord[TInput, TResult](
             task_id=str(uuid4()),
-            tool_use_id=tool_use_id,
-            tool_name=tool_name,
-            invocation_state_id=invocation_state_id,
+            input=input,
             status="queued",
             created_at=now,
             last_updated_at=now,
@@ -84,16 +93,16 @@ class InProcessTaskEngine:
         self._tasks[stored["task_id"]] = stored
         self._notify_task_updated(stored)
         self._schedule_task(stored["task_id"])
-        return copy.deepcopy(stored)
+        return _snapshot(stored)
 
-    def get(self, task_id: str) -> InProcessTaskRecord | None:
+    def get(self, task_id: str) -> InProcessTaskRecord[TInput, TResult] | None:
         """Return a task snapshot if it exists."""
         task = self._tasks.get(task_id)
-        return copy.deepcopy(task) if task is not None else None
+        return _snapshot(task) if task is not None else None
 
-    def list(self) -> list[InProcessTaskRecord]:
+    def list(self) -> list[InProcessTaskRecord[TInput, TResult]]:
         """Return all task snapshots."""
-        return [copy.deepcopy(task) for task in self._tasks.values()]
+        return [_snapshot(task) for task in self._tasks.values()]
 
     def remove(self, task_id: str) -> None:
         """Remove a terminal task."""
@@ -102,11 +111,11 @@ class InProcessTaskEngine:
             raise RuntimeError(f"Background task '{task_id}' cannot be removed before reaching a terminal status")
         del self._tasks[task_id]
 
-    def cancel(self, task_id: str, *, reason: str) -> InProcessTaskRecord:
+    def cancel(self, task_id: str, *, reason: str) -> InProcessTaskRecord[TInput, TResult]:
         """Cancel a non-terminal task."""
         current = self._require_task(task_id)
         if is_task_status_terminal(current["status"]):
-            return copy.deepcopy(current)
+            return _snapshot(current)
         task = self._update_task(task_id, _cancel_task)
         assert task is not None
         self._queue.pop(task_id, None)
@@ -157,10 +166,10 @@ class InProcessTaskEngine:
         self,
         task_id: str,
         update: Callable[[InterruptStateData], tuple[InterruptStateData, bool]],
-    ) -> InProcessTaskRecord:
-        """Apply input to a task that requires it."""
+    ) -> InProcessTaskRecord[TInput, TResult]:
+        """Apply interrupt responses to a task that requires input."""
 
-        def resume_task(record: InProcessTaskRecord) -> bool:
+        def resume_task(record: InProcessTaskRecord[TInput, TResult]) -> bool:
             if record["status"] != "input_required":
                 raise RuntimeError(
                     f"Background task '{task_id}' cannot be resumed: "
@@ -212,9 +221,7 @@ class InProcessTaskEngine:
             outcome = await self._execute_callback(
                 InProcessTaskExecutionContext(
                     task_id=task_id,
-                    tool_use_id=working["tool_use_id"],
-                    tool_name=working["tool_name"],
-                    invocation_state_id=working["invocation_state_id"],
+                    input=working["input"],
                     state=working.get("state"),
                     cancel_signal=active_execution.cancel_signal,
                 )
@@ -254,7 +261,7 @@ class InProcessTaskEngine:
         except asyncio.CancelledError:
             pass
 
-    def _finish_outcome(self, task_id: str, outcome: InProcessTaskExecutionOutcome) -> None:
+    def _finish_outcome(self, task_id: str, outcome: InProcessTaskExecutionOutcome[TResult]) -> None:
         if outcome["status"] == "input_required":
             self._update_task(task_id, partial(_require_input, state=outcome["state"]))
             return
@@ -264,7 +271,7 @@ class InProcessTaskEngine:
         active_execution.timeout_handle = None
         reason = f"Timed out after {self._timeout}s"
 
-        def time_out(record: InProcessTaskRecord) -> bool:
+        def time_out(record: InProcessTaskRecord[TInput, TResult]) -> bool:
             if record["status"] != "working":
                 return False
             record["status"] = "failed"
@@ -279,28 +286,28 @@ class InProcessTaskEngine:
     def _update_task(
         self,
         task_id: str,
-        update: Callable[[InProcessTaskRecord], bool],
-    ) -> InProcessTaskRecord | None:
+        update: Callable[[InProcessTaskRecord[TInput, TResult]], bool],
+    ) -> InProcessTaskRecord[TInput, TResult] | None:
         current = self._require_task(task_id)
-        next_task = copy.deepcopy(current)
+        next_task = _snapshot(current)
         if not update(next_task):
             return None
         next_task["last_updated_at"] = _timestamp()
-        stored = copy.deepcopy(next_task)
+        stored = _snapshot(next_task)
         self._tasks[task_id] = stored
         self._notify_task_updated(stored)
-        return copy.deepcopy(stored)
+        return _snapshot(stored)
 
-    def _require_task(self, task_id: str) -> InProcessTaskRecord:
+    def _require_task(self, task_id: str) -> InProcessTaskRecord[TInput, TResult]:
         task = self._tasks.get(task_id)
         if task is None:
             raise BackgroundTaskNotFoundError(task_id)
         return task
 
-    def _notify_task_updated(self, task: InProcessTaskRecord) -> None:
-        asyncio.get_running_loop().call_soon(self._run_notification, copy.deepcopy(task))
+    def _notify_task_updated(self, task: InProcessTaskRecord[TInput, TResult]) -> None:
+        asyncio.get_running_loop().call_soon(self._run_notification, _snapshot(task))
 
-    def _run_notification(self, task: InProcessTaskRecord) -> None:
+    def _run_notification(self, task: InProcessTaskRecord[TInput, TResult]) -> None:
         try:
             self._on_task_updated(task)
         except Exception:
@@ -313,20 +320,20 @@ class InProcessTaskEngine:
         self._idle_waiters.clear()
 
 
-def _cancel_task(record: InProcessTaskRecord) -> bool:
+def _cancel_task(record: InProcessTaskRecord[TInput, TResult]) -> bool:
     record["status"] = "cancelled"
     record.pop("state", None)
     return True
 
 
-def _mark_working(record: InProcessTaskRecord) -> bool:
+def _mark_working(record: InProcessTaskRecord[TInput, TResult]) -> bool:
     if record["status"] != "queued":
         return False
     record["status"] = "working"
     return True
 
 
-def _require_input(record: InProcessTaskRecord, *, state: InterruptStateData) -> bool:
+def _require_input(record: InProcessTaskRecord[TInput, TResult], *, state: InterruptStateData) -> bool:
     if record["status"] != "working":
         return False
     record["status"] = "input_required"
@@ -335,9 +342,9 @@ def _require_input(record: InProcessTaskRecord, *, state: InterruptStateData) ->
 
 
 def _finish_terminal_outcome(
-    record: InProcessTaskRecord,
+    record: InProcessTaskRecord[TInput, TResult],
     *,
-    outcome: CompletedTaskExecutionOutcome | FailedTaskExecutionOutcome,
+    outcome: CompletedTaskExecutionOutcome[TResult] | FailedTaskExecutionOutcome[TResult],
 ) -> bool:
     if record["status"] != "working":
         return False
@@ -367,6 +374,16 @@ def _exception_from_reason(reason: object | None) -> BaseException:
     if isinstance(reason, BaseException):
         return reason
     return RuntimeError(str(reason) if reason is not None else "Operation cancelled")
+
+
+def _snapshot(record: InProcessTaskRecord[TInput, TResult]) -> InProcessTaskRecord[TInput, TResult]:
+    """Copy the engine-owned fields; ``input`` and ``result`` belong to the consumer and are shared by reference."""
+    snapshot = dict(record)
+    if "state" in record:
+        snapshot["state"] = copy.deepcopy(record["state"])
+    if "failure" in record:
+        snapshot["failure"] = dict(record["failure"])
+    return snapshot  # type: ignore[return-value]
 
 
 def _timestamp() -> str:

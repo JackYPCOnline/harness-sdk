@@ -35,6 +35,19 @@ from ._types import (
 )
 
 
+@dataclass(frozen=True)
+class _ToolCall:
+    """The engine input for one backgrounded tool call."""
+
+    tool_use_id: str
+    tool_name: str
+    # Key into the manager's live execution state, which holds objects the record cannot.
+    invocation_state_id: str
+
+
+_ToolTaskRecord = InProcessTaskRecord[_ToolCall, ToolResult]
+
+
 class _MiddlewareInterrupt(Protocol):
     def __call__(
         self,
@@ -103,7 +116,7 @@ class InProcessTaskManager:
         self._on_task_updated = on_task_updated
         self._runtime = get_background_task_runtime()
         self._has_tasks = threading.Event()
-        self._engine = InProcessTaskEngine(
+        self._engine: InProcessTaskEngine[_ToolCall, ToolResult] = InProcessTaskEngine(
             max_concurrency=max_concurrency,
             timeout=timeout,
             execute=self._execute_tool_task,
@@ -139,9 +152,11 @@ class InProcessTaskManager:
                 origin_loop=origin_loop,
             )
             record = self._engine.submit(
-                tool_use_id=tool_use["toolUseId"],
-                tool_name=tool_use["name"],
-                invocation_state_id=invocation_state_id,
+                _ToolCall(
+                    tool_use_id=tool_use["toolUseId"],
+                    tool_name=tool_use["name"],
+                    invocation_state_id=invocation_state_id,
+                )
             )
             self._task_id_by_submission[submission_key] = record["task_id"]
             self._has_tasks.set()
@@ -264,8 +279,10 @@ class InProcessTaskManager:
 
         await self._runtime.run(remove)
 
-    async def _execute_tool_task(self, context: InProcessTaskExecutionContext) -> InProcessTaskExecutionOutcome:
-        execution = self._executions.get(context.invocation_state_id)
+    async def _execute_tool_task(
+        self, context: InProcessTaskExecutionContext[_ToolCall]
+    ) -> InProcessTaskExecutionOutcome[ToolResult]:
+        execution = self._executions.get(context.input.invocation_state_id)
         if execution is None:
             raise RuntimeError("Background task live execution state is unavailable")
         interrupt_state = _InterruptState.from_dict(context.state) if context.state is not None else _InterruptState()
@@ -312,13 +329,13 @@ class InProcessTaskManager:
             "result": result,
         }
 
-    def _handle_task_updated(self, record: InProcessTaskRecord) -> None:
+    def _handle_task_updated(self, record: _ToolTaskRecord) -> None:
         if record["status"] == "input_required" or is_task_status_terminal(record["status"]):
             changed = self._task_events.get(record["task_id"])
             if changed is not None:
                 changed.set()
         if is_task_status_terminal(record["status"]):
-            self._executions.pop(record["invocation_state_id"], None)
+            self._executions.pop(record["input"].invocation_state_id, None)
         if self._on_task_updated is not None:
             self._on_task_updated(_to_background_task(record))
 
@@ -382,11 +399,12 @@ def _tool_error_message(result: ToolResult) -> str:
     return "Tool returned an error without a message"
 
 
-def _to_background_task(record: InProcessTaskRecord) -> BackgroundTask:
+def _to_background_task(record: _ToolTaskRecord) -> BackgroundTask:
+    """Project an engine record onto the model- and session-facing snapshot."""
     task = BackgroundTask(
         task_id=record["task_id"],
-        tool_use_id=record["tool_use_id"],
-        tool_name=record["tool_name"],
+        tool_use_id=record["input"].tool_use_id,
+        tool_name=record["input"].tool_name,
         status=record["status"],
         created_at=record["created_at"],
         last_updated_at=record["last_updated_at"],

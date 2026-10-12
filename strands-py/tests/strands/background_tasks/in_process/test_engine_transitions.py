@@ -32,7 +32,7 @@ async def test_wait_for_idle_cancels_observation_without_cancelling_work() -> No
         return await finish
 
     engine = create_engine(execute)
-    task = engine.submit(**create_admission("work"))
+    task = engine.submit(create_admission("work"))
     idle_signal = CancelSignal()
     idle_waiting = asyncio.create_task(engine.wait_for_idle(cancel_signal=idle_signal))
 
@@ -53,7 +53,7 @@ async def test_resume_updates_state_and_restarts_execution() -> None:
         return {"status": "input_required", "state": create_state("waiting")}
 
     engine = create_engine(execute)
-    task = engine.submit(**create_admission("work"))
+    task = engine.submit(create_admission("work"))
     await engine.wait_for_idle()
     assert_task(
         engine.get(task["task_id"]),
@@ -94,7 +94,7 @@ async def test_resume_restarts_execution_while_previous_execution_settles() -> N
             engine.resume(task["task_id"], lambda state: (state, True))
 
     engine = create_engine(execute, on_task_updated=on_task_updated)
-    task = engine.submit(**create_admission("work"))
+    task = engine.submit(create_admission("work"))
     await engine.wait_for_idle()
 
     tru_executions = executions
@@ -114,7 +114,7 @@ async def test_cancel_running_work_and_remove_before_execution_settles() -> None
         return await finish
 
     engine = create_engine(execute)
-    task = engine.submit(**create_admission("work"))
+    task = engine.submit(create_admission("work"))
     await asyncio.sleep(0)
 
     assert_task(engine.cancel(task["task_id"], reason="Stop work"), task, {"status": "cancelled"})
@@ -144,7 +144,7 @@ async def test_cancel_scheduled_work_without_executing_it() -> None:
         return {"status": "completed", "result": create_result("late")}
 
     engine = create_engine(execute)
-    task = engine.submit(**create_admission("work"))
+    task = engine.submit(create_admission("work"))
 
     assert_task(engine.cancel(task["task_id"], reason="Stop work"), task, {"status": "cancelled"})
     await engine.wait_for_idle()
@@ -159,12 +159,12 @@ async def test_cancel_queued_work_without_executing_it() -> None:
     executions: list[str] = []
 
     async def execute(context: InProcessTaskExecutionContext) -> InProcessTaskExecutionOutcome:
-        executions.append(context.tool_name)
+        executions.append(context.input)
         return await finish
 
     engine = create_engine(execute, max_concurrency=1)
-    engine.submit(**create_admission("running"))
-    queued = engine.submit(**create_admission("queued"))
+    engine.submit(create_admission("running"))
+    queued = engine.submit(create_admission("queued"))
 
     assert_task(engine.cancel(queued["task_id"], reason="No longer needed"), queued, {"status": "cancelled"})
     resolve({"status": "completed", "result": create_result("done")})

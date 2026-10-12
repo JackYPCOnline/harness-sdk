@@ -1,32 +1,37 @@
-"""Internal types for in-process background task execution."""
+"""Internal types for in-process background task execution.
+
+The engine is generic over its payload: ``TInput`` is whatever a consumer needs to execute a task
+and ``TResult`` is what a completed task produces. The background tool plugin instantiates it with
+tool calls and tool results; other consumers supply their own types and never see tool shapes.
+"""
 
 from __future__ import annotations
 
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias
+from typing import Any, Generic, Literal, TypeAlias, TypeVar
 
 from typing_extensions import NotRequired, TypedDict
 
 from strands.background_tasks._types import BackgroundTaskError, BackgroundTaskStatus
-from strands.types.tools import ToolResult
+
+TInput = TypeVar("TInput")
+TResult = TypeVar("TResult")
 
 InterruptStateData: TypeAlias = dict[str, Any]
 
 
-class InProcessTaskRecord(TypedDict):
+class InProcessTaskRecord(TypedDict, Generic[TInput, TResult]):
     """State tracked for one in-process task."""
 
     task_id: str
-    tool_use_id: str
-    tool_name: str
-    invocation_state_id: str
+    input: TInput
     status: BackgroundTaskStatus
     created_at: str
     last_updated_at: str
     state: NotRequired[InterruptStateData]
-    result: NotRequired[ToolResult]
+    result: NotRequired[TResult]
     failure: NotRequired[BackgroundTaskError]
 
 
@@ -76,39 +81,37 @@ class CancelSignal(threading.Event):
 
 
 @dataclass(frozen=True)
-class InProcessTaskExecutionContext:
+class InProcessTaskExecutionContext(Generic[TInput]):
     """Context supplied to one task execution."""
 
     task_id: str
-    tool_use_id: str
-    tool_name: str
-    invocation_state_id: str
+    input: TInput
     cancel_signal: CancelSignal
     state: InterruptStateData | None = None
 
 
-class CompletedTaskExecutionOutcome(TypedDict):
+class CompletedTaskExecutionOutcome(TypedDict, Generic[TResult]):
     """Successful task outcome."""
 
     status: Literal["completed"]
-    result: ToolResult
+    result: TResult
 
 
 class InputRequiredTaskExecutionOutcome(TypedDict):
-    """Task outcome requiring input."""
+    """Task outcome requiring input before it can run again."""
 
     status: Literal["input_required"]
     state: InterruptStateData
 
 
-class FailedTaskExecutionOutcome(TypedDict):
+class FailedTaskExecutionOutcome(TypedDict, Generic[TResult]):
     """Failed task outcome."""
 
     status: Literal["failed"]
     failure: BackgroundTaskError
-    result: NotRequired[ToolResult]
+    result: NotRequired[TResult]
 
 
 InProcessTaskExecutionOutcome: TypeAlias = (
-    CompletedTaskExecutionOutcome | InputRequiredTaskExecutionOutcome | FailedTaskExecutionOutcome
+    CompletedTaskExecutionOutcome[TResult] | InputRequiredTaskExecutionOutcome | FailedTaskExecutionOutcome[TResult]
 )
