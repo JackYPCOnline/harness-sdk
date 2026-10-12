@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Generic, Literal, TypeAlias, TypeVar
+from typing import Any, Generic, Literal, Protocol, TypeAlias, TypeVar
 
 from typing_extensions import NotRequired, TypedDict
 
@@ -34,6 +34,29 @@ class TaskRecord(TypedDict, Generic[TInput, TResult]):
     state: NotRequired[TaskState]
     result: NotRequired[TResult]
     failure: NotRequired[TaskFailure]
+
+
+class TaskCancellation(Protocol):
+    """Cancellation behavior required by the task scheduler."""
+
+    reason: object | None
+
+    @property
+    def aborted(self) -> bool:
+        """Return whether cancellation was requested."""
+        ...
+
+    def abort(self, reason: object | None = None) -> None:
+        """Request cancellation once."""
+        ...
+
+    def add_abort_callback(self, callback: Callable[[], None]) -> None:
+        """Register a callback that runs when cancellation is requested."""
+        ...
+
+    def remove_abort_callback(self, callback: Callable[[], None]) -> None:
+        """Unregister a cancellation callback."""
+        ...
 
 
 class TaskCancelSignal(threading.Event):
@@ -87,7 +110,7 @@ class TaskExecutionContext(Generic[TInput]):
 
     task_id: str
     input: TInput
-    cancel_signal: TaskCancelSignal
+    cancel_signal: TaskCancellation
     state: TaskState | None = None
 
 
