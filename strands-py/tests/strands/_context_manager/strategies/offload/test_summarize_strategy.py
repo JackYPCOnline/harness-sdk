@@ -292,6 +292,24 @@ class TestSummarizeStrategyBackground:
         with pytest.raises(ValueError, match="per-block"):
             Offload.summarize("tool_results", {"background": True}).when(utilization=0.8)
 
+    def test_warns_and_ignores_unknown_background_config(self):
+        with pytest.warns(UserWarning, match="Invalid configuration parameters"):
+            strategy = Offload.summarize("tool_results", {"background": {"unexpected": True}})
+
+        assert strategy._deferred is not None
+        assert strategy._deferred._max_pending == 10
+
+    def test_accepts_custom_background_policy(self):
+        strategy = Offload.summarize(
+            "tool_results",
+            {"background": {"max_concurrency": 2, "task_timeout": 3, "flush_timeout": 4}},
+        ).when(threshold=100)
+
+        assert strategy._deferred is not None
+        assert strategy._deferred._max_pending == 2
+        assert strategy._deferred._engine._timeout == 3
+        assert strategy._deferred._flush_timeout == 4
+
     @pytest.mark.asyncio
     async def test_apply_defers_then_commits_once_the_summary_is_ready(self, mock_agent):
         gate = asyncio.Event()
@@ -307,6 +325,8 @@ class TestSummarizeStrategyBackground:
         assert messages[1]["content"][0]["toolResult"]["content"] == [{"text": "x" * 10000}]
 
         gate.set()
+        assert strategy._deferred is not None
+        await strategy._deferred._engine.wait_for_idle()
         await asyncio.sleep(0)
 
         assert await strategy.apply(context) is True
@@ -377,6 +397,11 @@ class _GatedSummarizer(MockedModelProvider):
 
 class _MainModel(MockedModelProvider):
     """Main model that opens the summarizer gate when its final call starts."""
+
+    @property
+    def context_window_limit(self) -> int:
+        """Return the fixed context window used by this test model."""
+        return 200_000
 
     def __init__(self, gate: asyncio.Event) -> None:
         super().__init__(

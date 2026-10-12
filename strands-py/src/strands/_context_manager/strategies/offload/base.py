@@ -16,15 +16,12 @@ from ....types.tools import ToolUse
 from ...retrieval_tool import RETRIEVAL_TOOL_NAME
 from ...stash import Stash
 from ...types import ContextState, is_text_block, is_tool_result_block, is_tool_use_block
-from .deferred import DeferredReplacements
+from .deferred import DeferredOptions, DeferredReplacements
 
 if TYPE_CHECKING:
     from ....agent.agent import Agent
 
 logger = logging.getLogger(__name__)
-
-# Replacements computed concurrently per batch when a strategy runs in the background.
-_BACKGROUND_BATCH_SIZE = 10
 
 OffloadTarget = Literal["*", "tool_results", "tool_result_errors", "assistant_text", "user_text"] | list[str]
 """Target for offload operations."""
@@ -292,15 +289,15 @@ class BaseOffloadStrategy(ABC):
         target: OffloadTarget | None = None,
         conditions: OffloadConditions | None = None,
         *,
-        background: bool = False,
+        background: DeferredOptions | None = None,
     ) -> None:
         """Initialize the strategy.
 
         Args:
             target: What content the strategy acts on.
             conditions: When the strategy fires.
-            background: Compute per-block replacements concurrently and apply them at the next safe
-                boundary instead of before the current model call.
+            background: Configuration for computing per-block replacements concurrently and applying them at the
+                next safe boundary instead of before the current model call.
 
         Raises:
             ValueError: If the target is an empty list, or ``background`` is combined with a
@@ -321,9 +318,9 @@ class BaseOffloadStrategy(ABC):
 
         self._include_filter, self._exclude_filter = _resolve_tool_filter(target)
 
-        if background and self._is_message_level:
+        if background is not None and self._is_message_level:
             raise ValueError("background applies to per-block strategies; remove the 'utilization' condition")
-        self._deferred = DeferredReplacements(max_pending=_BACKGROUND_BATCH_SIZE) if background else None
+        self._deferred = DeferredReplacements(background) if background is not None else None
 
     @property
     def _is_message_level(self) -> bool:
