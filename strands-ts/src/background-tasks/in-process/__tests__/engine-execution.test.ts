@@ -1,15 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createAdmission, createEngine, createResult, deferred, expectTask } from './engine-test-helpers.js'
-import type { ToolResultBlockData } from '../../../types/messages.js'
-import type { InProcessTaskExecutionOutcome } from '../types.js'
-import type { TestTaskRecord } from './engine-test-helpers.js'
+import type { InProcessTaskExecutionOutcome, InProcessTaskRecord } from '../types.js'
 
 describe('InProcessTaskEngine', () => {
   describe('admission and updates', () => {
     it('prevents task update callbacks from mutating engine-owned state', async () => {
-      const statuses: TestTaskRecord['status'][] = []
+      const statuses: InProcessTaskRecord['status'][] = []
       const engine = createEngine(
-        async ({ input }) => ({ status: 'completed', result: createResult(input.toUpperCase()) }),
+        async ({ toolName }) => ({ status: 'completed', result: createResult(toolName.toUpperCase()) }),
         {
           onTaskUpdated: (task) => {
             statuses.push(task.status)
@@ -42,14 +40,14 @@ describe('InProcessTaskEngine', () => {
   describe('execution', () => {
     it('bounds execution concurrency', async () => {
       const releases = [
-        deferred<InProcessTaskExecutionOutcome<ToolResultBlockData>>(),
-        deferred<InProcessTaskExecutionOutcome<ToolResultBlockData>>(),
-        deferred<InProcessTaskExecutionOutcome<ToolResultBlockData>>(),
+        deferred<InProcessTaskExecutionOutcome>(),
+        deferred<InProcessTaskExecutionOutcome>(),
+        deferred<InProcessTaskExecutionOutcome>(),
       ]
       const started = [deferred<void>(), deferred<void>(), deferred<void>()]
       const engine = createEngine(
-        async ({ input }) => {
-          const index = Number(input)
+        async ({ toolName }) => {
+          const index = Number(toolName)
           started[index]!.resolve()
           return releases[index]!.promise
         },
@@ -100,12 +98,12 @@ describe('InProcessTaskEngine', () => {
     })
 
     it('does not release capacity until a timed-out execution settles', async () => {
-      const release = deferred<InProcessTaskExecutionOutcome<ToolResultBlockData>>()
+      const release = deferred<InProcessTaskExecutionOutcome>()
       const timedOut = deferred<void>()
       let hungSignal: AbortSignal | undefined
       const engine = createEngine(
-        async ({ input, cancelSignal }) => {
-          if (input === 'hang') {
+        async ({ toolName, cancelSignal }) => {
+          if (toolName === 'hang') {
             hungSignal = cancelSignal
             cancelSignal.addEventListener('abort', () => timedOut.resolve(), { once: true })
             return release.promise
@@ -135,7 +133,7 @@ describe('InProcessTaskEngine', () => {
     })
 
     it('allows Infinity to disable execution timeouts', async () => {
-      const finish = deferred<InProcessTaskExecutionOutcome<ToolResultBlockData>>()
+      const finish = deferred<InProcessTaskExecutionOutcome>()
       const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
       const engine = createEngine(async () => finish.promise, { timeout: Infinity })
       const task = engine.submit(createAdmission('work'))

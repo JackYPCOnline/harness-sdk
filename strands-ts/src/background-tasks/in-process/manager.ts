@@ -6,7 +6,7 @@ import type { ExecuteToolContext } from '../../middleware/index.js'
 import type { InvocationState } from '../../types/agent.js'
 import { InterruptResponseContent, type InterruptParams, type InterruptResponse } from '../../types/interrupt.js'
 import type { JSONValue } from '../../types/json.js'
-import { TextBlock, type ToolResultBlock, type ToolResultBlockData } from '../../types/messages.js'
+import { TextBlock, type ToolResultBlock } from '../../types/messages.js'
 import type { Tool, ToolContext } from '../../tools/tool.js'
 import { BackgroundTaskNotFoundError, BackgroundTaskTimeoutError } from '../errors.js'
 import { assertTimerDelay } from '../timer.js'
@@ -25,16 +25,6 @@ interface LiveToolExecution {
   readonly tool: Tool
 }
 
-/** The engine input for one backgrounded tool call. */
-interface ToolCall {
-  readonly toolUseId: string
-  readonly toolName: string
-  /** Key into the manager's live execution state, which holds objects the record cannot. */
-  readonly invocationStateId: string
-}
-
-type ToolTaskRecord = InProcessTaskRecord<ToolCall, ToolResultBlockData>
-
 /** Configures in-process background task execution. @internal */
 export interface InProcessTaskManagerConfig {
   /** Maximum number of physically executing background tasks. Defaults to `4`. */
@@ -48,7 +38,7 @@ export interface InProcessTaskManagerConfig {
 export class InProcessTaskManager implements BackgroundTaskManager {
   private readonly _agent: Agent
   private readonly _executeTool
-  private readonly _engine: InProcessTaskEngine<ToolCall, ToolResultBlockData>
+  private readonly _engine: InProcessTaskEngine
   private readonly _executions = new Map<string, LiveToolExecution>()
   private readonly _taskIdBySubmission = new Map<string, string>()
   private readonly _taskWaiters = new Map<string, Set<(task: BackgroundTask) => void>>()
@@ -67,11 +57,11 @@ export class InProcessTaskManager implements BackgroundTaskManager {
     this._engine = new InProcessTaskEngine({
       maxConcurrency: config.maxConcurrency ?? 4,
       timeout: config.timeout ?? Infinity,
-      execute: (context): Promise<InProcessTaskExecutionOutcome<ToolResultBlockData>> => this._executeToolTask(context),
+      execute: (context): Promise<InProcessTaskExecutionOutcome> => this._executeToolTask(context),
       onTaskUpdated: (record): void => {
         const task = toBackgroundTask(record)
         if (isTaskStatusTerminal(record.status)) {
-          this._executions.delete(record.input.invocationStateId)
+          this._executions.delete(record.invocationStateId)
         }
         if (record.status === 'input_required' || isTaskStatusTerminal(record.status)) {
           this._notifyTaskWaiters(task)
@@ -194,10 +184,8 @@ export class InProcessTaskManager implements BackgroundTaskManager {
     }
   }
 
-  private async _executeToolTask(
-    context: InProcessTaskExecutionContext<ToolCall>
-  ): Promise<InProcessTaskExecutionOutcome<ToolResultBlockData>> {
-    const execution = this._executions.get(context.input.invocationStateId)
+  private async _executeToolTask(context: InProcessTaskExecutionContext): Promise<InProcessTaskExecutionOutcome> {
+    const execution = this._executions.get(context.invocationStateId)
     if (!execution) throw new Error('Background task live execution state is unavailable')
     const interruptState = context.state ? InterruptState.fromJSON(context.state) : new InterruptState()
     try {
@@ -241,7 +229,7 @@ export class InProcessTaskManager implements BackgroundTaskManager {
   }
 }
 
-function toolTaskOutcome(resultBlock: ToolResultBlock): InProcessTaskExecutionOutcome<ToolResultBlockData> {
+function toolTaskOutcome(resultBlock: ToolResultBlock): InProcessTaskExecutionOutcome {
   const result = resultBlock.toJSON().toolResult
   if (resultBlock.status === 'success') return { status: 'completed', result }
   return {
@@ -269,13 +257,12 @@ function interruptTool<T>(state: InterruptState, taskId: string, params: Interru
   throw new InterruptError(interrupt)
 }
 
-/** Projects an engine record onto the model- and session-facing snapshot. */
-function toBackgroundTask(record: ToolTaskRecord): BackgroundTask {
+function toBackgroundTask(record: InProcessTaskRecord): BackgroundTask {
   const interrupts = record.state ? InterruptState.fromJSON(record.state).getUnansweredInterrupts() : []
   return {
     taskId: record.taskId,
-    toolUseId: record.input.toolUseId,
-    toolName: record.input.toolName,
+    toolUseId: record.toolUseId,
+    toolName: record.toolName,
     status: record.status,
     createdAt: record.createdAt,
     lastUpdatedAt: record.lastUpdatedAt,

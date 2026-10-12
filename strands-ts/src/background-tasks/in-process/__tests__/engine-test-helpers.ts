@@ -4,16 +4,13 @@ import type { InterruptStateData } from '../../../interrupt.js'
 import type { ToolResultBlockData } from '../../../types/messages.js'
 import type { InProcessTaskEngineOptions, InProcessTaskRecord } from '../types.js'
 
-/** Engine instantiation used by the engine tests: a string input and a tool result. */
-export type TestTaskRecord = InProcessTaskRecord<string, ToolResultBlockData>
-export type TestEngineOptions = InProcessTaskEngineOptions<string, ToolResultBlockData>
-
-type ExpectedTaskFields = Pick<TestTaskRecord, 'status'> & Partial<Pick<TestTaskRecord, 'state' | 'result' | 'failure'>>
+type ExpectedTaskFields = Pick<InProcessTaskRecord, 'status'> &
+  Partial<Pick<InProcessTaskRecord, 'state' | 'result' | 'failure'>>
 
 export function createEngine(
-  execute: TestEngineOptions['execute'],
-  options: Partial<TestEngineOptions> = {}
-): InProcessTaskEngine<string, ToolResultBlockData> {
+  execute: InProcessTaskEngineOptions['execute'],
+  options: Partial<InProcessTaskEngineOptions> = {}
+): InProcessTaskEngine {
   return new InProcessTaskEngine({
     maxConcurrency: 2,
     timeout: 1_000,
@@ -23,8 +20,14 @@ export function createEngine(
   })
 }
 
-export function createAdmission(value: string): string {
-  return value
+export function createAdmission(
+  value: string
+): Pick<InProcessTaskRecord, 'toolUseId' | 'toolName' | 'invocationStateId'> {
+  return {
+    toolUseId: value,
+    toolName: value,
+    invocationStateId: value,
+  }
 }
 
 export function createResult(value: string): ToolResultBlockData {
@@ -59,10 +62,16 @@ export function deferred<Value>(): { promise: Promise<Value>; resolve(value: Val
   return { promise, resolve }
 }
 
-export function expectTask(actual: TestTaskRecord | undefined, task: TestTaskRecord, fields: ExpectedTaskFields): void {
+export function expectTask(
+  actual: InProcessTaskRecord | undefined,
+  task: InProcessTaskRecord,
+  fields: ExpectedTaskFields
+): void {
   expect(actual).toEqual({
     taskId: task.taskId,
-    input: task.input,
+    toolUseId: task.toolUseId,
+    toolName: task.toolName,
+    invocationStateId: task.invocationStateId,
     ...fields,
     createdAt: task.createdAt,
     lastUpdatedAt: expect.any(String),
