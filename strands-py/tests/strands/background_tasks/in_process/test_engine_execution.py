@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import threading
+from unittest.mock import ANY
 
 import pytest
 
@@ -27,7 +28,7 @@ async def test_admission_and_updates_prevent_callbacks_from_mutating_engine_stat
     statuses: list[str] = []
 
     async def execute(context: InProcessTaskExecutionContext) -> InProcessTaskExecutionOutcome:
-        return {"status": "completed", "result": create_result(context.input.upper())}
+        return {"status": "completed", "result": create_result(context.tool_name.upper())}
 
     def on_task_updated(task: InProcessTaskRecord) -> None:
         statuses.append(task["status"])
@@ -37,7 +38,7 @@ async def test_admission_and_updates_prevent_callbacks_from_mutating_engine_stat
             raise RuntimeError("notification failed")
 
     engine = create_engine(execute, on_task_updated=on_task_updated)
-    admitted = engine.submit(create_admission("hello"))
+    admitted = engine.submit(**create_admission("hello"))
 
     admitted["status"] = "cancelled"
     await engine.wait_for_idle()
@@ -73,12 +74,12 @@ async def test_execution_bounds_concurrency() -> None:
     started = [asyncio.Event(), asyncio.Event(), asyncio.Event()]
 
     async def execute(context: InProcessTaskExecutionContext) -> InProcessTaskExecutionOutcome:
-        index = int(context.input)
+        index = int(context.tool_name)
         started[index].set()
         return await releases[index][0]
 
     engine = create_engine(execute, max_concurrency=2)
-    tasks = [engine.submit(create_admission(str(index))) for index in range(3)]
+    tasks = [engine.submit(**create_admission(str(index))) for index in range(3)]
     await asyncio.gather(started[0].wait(), started[1].wait())
     assert_task(engine.get(tasks[2]["task_id"]), tasks[2], {"status": "queued"})
 
@@ -102,7 +103,7 @@ async def test_execution_propagates_asyncio_cancellation() -> None:
         raise AssertionError("unreachable")
 
     engine = create_engine(execute)
-    task = engine.submit(create_admission("cancel"))
+    task = engine.submit(**create_admission("cancel"))
     await started.wait()
     assert execution_task is not None
 
@@ -120,7 +121,7 @@ async def test_execution_records_classified_failures() -> None:
         raise TypeError("Execution exploded")
 
     thrown_engine = create_engine(throw_error)
-    thrown = thrown_engine.submit(create_admission("throw"))
+    thrown = thrown_engine.submit(**create_admission("throw"))
     await thrown_engine.wait_for_idle()
     assert_task(
         thrown_engine.get(thrown["task_id"]),
@@ -136,7 +137,7 @@ async def test_execution_records_classified_failures() -> None:
         raise OpaqueError
 
     opaque_engine = create_engine(throw_opaque)
-    opaque = opaque_engine.submit(create_admission("opaque"))
+    opaque = opaque_engine.submit(**create_admission("opaque"))
     await opaque_engine.wait_for_idle()
     assert_task(
         opaque_engine.get(opaque["task_id"]),
@@ -155,7 +156,7 @@ async def test_execution_records_classified_failures() -> None:
         }
 
     returned_engine = create_engine(return_failure)
-    returned = returned_engine.submit(create_admission("return"))
+    returned = returned_engine.submit(**create_admission("return"))
     await returned_engine.wait_for_idle()
     assert_task(
         returned_engine.get(returned["task_id"]),
@@ -177,16 +178,17 @@ async def test_execution_records_classified_failures() -> None:
             },
         }
 
-    # Results belong to the consumer: the engine stores them by reference and never copies them.
     uncopyable_engine = create_engine(return_uncopyable)
-    uncopyable = uncopyable_engine.submit(create_admission("uncopyable"))
+    uncopyable = uncopyable_engine.submit(**create_admission("uncopyable"))
     await uncopyable_engine.wait_for_idle()
-    stored = uncopyable_engine.get(uncopyable["task_id"])
-    assert stored is not None
-    assert_task(stored, uncopyable, {"status": "completed", "result": stored["result"]})
-    tru_handle = stored["result"]["content"][0]["json"]["handle"]
-    exp_handle_type = type(threading.Lock())
-    assert isinstance(tru_handle, exp_handle_type)
+    assert_task(
+        uncopyable_engine.get(uncopyable["task_id"]),
+        uncopyable,
+        {
+            "status": "failed",
+            "failure": {"type": "execution_error", "message": ANY},
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -197,7 +199,7 @@ async def test_execution_timeout_retains_capacity_until_execution_settles() -> N
 
     async def execute(context: InProcessTaskExecutionContext) -> InProcessTaskExecutionOutcome:
         nonlocal hung_signal
-        if context.input == "hang":
+        if context.tool_name == "hang":
             hung_signal = context.cancel_signal
             while not context.cancel_signal.aborted:
                 await asyncio.sleep(0)
@@ -206,8 +208,8 @@ async def test_execution_timeout_retains_capacity_until_execution_settles() -> N
         return {"status": "completed", "result": create_result("next")}
 
     engine = create_engine(execute, max_concurrency=1, timeout=0.01)
-    hung = engine.submit(create_admission("hang"))
-    next_task = engine.submit(create_admission("next"))
+    hung = engine.submit(**create_admission("hang"))
+    next_task = engine.submit(**create_admission("next"))
     await timed_out.wait()
     try:
         tru_aborted = hung_signal is not None and hung_signal.aborted
@@ -245,7 +247,7 @@ async def test_execution_infinity_disables_timeouts(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(loop, "call_later", fail_call_later)
     engine = create_engine(execute, timeout=math.inf)
-    task = engine.submit(create_admission("work"))
+    task = engine.submit(**create_admission("work"))
     await asyncio.sleep(0)
     monkeypatch.setattr(loop, "call_later", call_later)
 
