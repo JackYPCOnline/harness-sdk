@@ -37,11 +37,15 @@ Learn more about the A2A protocol:
 Check out the [Native A2A Support samples](https://github.com/strands-agents/samples/tree/main/python/03-integrate/protocols/a2a-native) for complete, ready-to-run client, server and tool implementations.
 :::
 
-### Agent Card
+### Key Concepts
 
-An agent card is the JSON document an A2A server publishes at `/.well-known/agent-card.json` to describe its agent: name, description, URL, version, skills, and capabilities. Clients read the card to discover an agent before sending it messages.
+The rest of this page builds on three protocol concepts.
 
-Strands handles both sides. `A2AAgent` fetches and caches the card of the remote agent it calls (see [Fetching the Agent Card](#fetching-the-agent-card)). The A2A server builds its card from your agent and server options (see [Agent Card](server-configuration.md#agent-card) to customize it).
+**Agent card.** The JSON document an A2A server publishes at `/.well-known/agent-card.json` to describe its agent: name, description, URL, version, skills, and capabilities. Clients read the card to discover an agent before sending it messages. `A2AAgent` fetches and caches the card for you (see [Fetching the Agent Card](#fetching-the-agent-card)), and the A2A server builds its card from your agent and server options (see [Agent Card](server-configuration.md#agent-card)).
+
+**Context.** A `contextId` identifies one conversation. Messages that share a `contextId` continue the same conversation, and the Strands server keeps separate conversation state for each one (see [Conversation Isolation](#conversation-isolation)).
+
+**Task.** Each request the server handles runs as a task, identified by a `taskId`. A task moves through states such as `working`, `input_required`, `completed`, `failed`, and `canceled`. A task in `input_required` waits for the client to answer on the same `taskId` (see [Answering Interrupts](#answering-interrupts)).
 
 ## Installation
 
@@ -346,7 +350,7 @@ The server serves the agent card at `/.well-known/agent-card.json` and handles J
 
 The A2A protocol identifies each conversation with a `context_id`. The server isolates conversation state per `context_id` so that callers in different contexts never read or influence each other's history. Two modes control how that isolation works.
 
-The recommended mode is `agent_factory` - you provide a callable that takes a `context_id` and returns a dedicated agent for each conversation, reusing it for later requests in that context. This enables different conversations to run concurrently because each owns an independent agent.
+The recommended mode is `agent_factory`: you provide a callable that takes a `context_id` and returns a dedicated agent for each conversation, reusing it for later requests in that context. This enables different conversations to run concurrently because each owns an independent agent.
 
 The factory is also where you wire per-conversation concerns such as a `session_manager` to persist that conversation's history.
 
@@ -469,7 +473,7 @@ A `DataPart` without an `interruptResponse` key is unaffected and continues to r
 
 ### Server Configuration and Deployment
 
-The `A2AServer` (Python) and `A2AExpressServer` (TypeScript) expose the full set of constructor options, custom task stores and request-handler components, and path-based mounting for load-balanced deployments. See [A2A Server Configuration](server-configuration.md) for the complete reference.
+To tune a server after you create it, see [A2A Server Configuration](server-configuration.md). It covers every constructor option, the agent card, serve options, embedding the server in your own application, path-based mounting, request handler components, and authentication.
 
 
 ## Troubleshooting
