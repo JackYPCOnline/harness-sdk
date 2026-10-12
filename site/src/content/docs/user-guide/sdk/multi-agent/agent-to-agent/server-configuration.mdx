@@ -50,7 +50,7 @@ The TypeScript SDK provides two server classes:
 - `A2AServer` (from `@strands-agents/sdk/a2a`) builds the agent card and request handler. Use it to integrate with an HTTP framework other than Express.
 - `A2AExpressServer` (from `@strands-agents/sdk/a2a/express`) extends `A2AServer` with an Express transport through `serve()` and `createMiddleware()`.
 
-`A2AExpressServer` accepts the following config object. `A2AServer` accepts the same object without `host`, `port`, and `userBuilder`.
+`A2AExpressServer` accepts the following config object. `A2AServer` accepts the same object without `host`, `port`, and `userBuilder`. With no address to derive it from, its `httpUrl` defaults to `''`, so set it explicitly.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -61,7 +61,7 @@ The TypeScript SDK provides two server classes:
 | `description` | `string` | The agent's `description`, else `''` | Agent description advertised in the agent card. |
 | `host` | `string` | `'127.0.0.1'` | Address `serve()` binds to. |
 | `port` | `number` | `9000` | Port `serve()` listens on. Use `0` for an OS-assigned port. |
-| `httpUrl` | `string` | `http://{host}:{port}` | Public URL advertised in the agent card. |
+| `httpUrl` | `string` | `http://{host}:{port}` (`''` on `A2AServer`) | Public URL advertised in the agent card. |
 | `version` | `string` | `'0.0.1'` | Agent version advertised in the agent card. |
 | `skills` | `AgentSkill[]` | `[]` | Skills advertised in the agent card. |
 | `taskStore` | `TaskStore` | `InMemoryTaskStore` | Persists A2A task state. |
