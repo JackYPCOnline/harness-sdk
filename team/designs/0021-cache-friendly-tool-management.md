@@ -12,11 +12,11 @@
 ## Context:
 The tool selection issues are created months back ago, We had a review session on where this feature would live and its scope. To read full doc:[#4008](https://github.com/strands-agents/harness-sdk/pull/4008)
 
-The conclusion is that toolSpec should be treated to be part of context, and should be under context manager. The scope is limited to `Only select` + `Ways/Strategies of select` as P0 as feasible fast deliver target. To read full code[#4921](https://github.com/strands-agents/harness-sdk/pull/4921)
+The conclusion is that toolSpec should be treated to be part of context, and should be under context manager. The scope is limited to `Only select` + `Ways/Strategies of select` as P0 as feasible fast deliver target. To read full code: [#4921](https://github.com/strands-agents/harness-sdk/pull/4921)
 
-Tool selection under existing design is helpful under the condition that we trim 120~ tools to 20~ with short history(see appendix A), it helps reduce the raw token but it doesn't guarantee cost reduce in less/60~ tools scenarios because of prompt caching.
+Tool selection under existing design is helpful under the condition that we trim 120~ tools to 20~ with short history (see appendix A), it helps reduce the raw token but it doesn't guarantee cost reduce in less/60~ tools scenarios because of prompt caching.
 
-Models become more advanced and they have more native features, Claude established preserved thinking + inline tools on Sept 15th, OpenAI also has native tool selection in their APIs on some newer models. That said, the feature scope is widely larger for context management and our focus shifted to cost saving for broader use cases. 
+Models become more advanced and they have more native features, Claude established preserved thinking (Claude Fable 5.1 and newer, enforced by default for accounts created since Aug 31st) + inline tools (beta, Sept 15th), OpenAI also has native tool selection in their APIs on some newer models. That said, the feature scope is widely larger for context management and our focus shifted to cost saving for broader use cases. 
 
 To help our customers achieve real cost reduction, we need to find a more sophisticated way on adding/removing tools + keeping tool specs lightweight and consistent.
 
@@ -81,7 +81,7 @@ So we keep the name and description visible all the time, and load the schema on
 
 On the first model call of a conversation, the context manager makes a plan and puts each tool in one group:
 
-- Pinned: full spec, always sent. User pins, SDK-protected tools (structured output, background tasks), and the loader `load_tools` or etc.
+- Pinned: full spec, always sent. User pins, SDK-protected tools (structured output, background tasks), and the loader (`load_tools`, or the provider's search tool).
 - Deferred: name and description sent. The schema loads when the model asks for it.
 - Loaded: deferred tools whose schema is already loaded. Loads are appended to the messages.
 
@@ -93,7 +93,7 @@ To keep the cache valid:
 - Every change is appended as a message. Earlier messages are never edited.
 - The loader is never deferred. Claude needs at least one non-deferred tool.
 
-We only do this on models that can take a deferred schema. Models with constrained decoding or strict mode can't, because they only follow the schema declared in the tools list. We don't keep a new model list. The default is one rule per provider: Claude models (the same check `BedrockModel` already uses for caching, `bedrock.ts:96`) and OpenAI Responses gpt-5.4 and later. Strict mode turns it off. Every other model gets every spec, the same as today. Supporting another model is a change to that provider's rule.
+We only do this on models that can take a deferred schema. Models with constrained decoding or strict mode can't, because they only follow the schema declared in the tools list. We don't keep a new model list. It's one rule per provider: Claude 4.5 and later, and OpenAI Responses gpt-5.4 and later. Strict mode turns it off. Every other model gets every spec, the same as today. Supporting another model is a change to that provider's rule.
 
 ### How it fits each provider
 
@@ -101,7 +101,7 @@ We only do this on models that can take a deferred schema. Models with constrain
 |---|---|---|---|
 | Claude API, Claude 4.5 and later | Pinned tools, `load_tools`, and every deferred tool with `defer_loading: true` | `load_tools` returns `tool_reference` blocks, and the API expands them | Native, untested |
 | OpenAI Responses, gpt-5.4 and later | Pinned tools, `{ type: 'tool_search' }`, and every deferred function with `defer_loading: true` | Hosted tool search; the API returns `tool_search_output` | Native, untested |
-| Claude on Bedrock Converse, `strictTools` off | Pinned tools, `load_tools`, and one stub per deferred tool: real name, full description, schema `{ "type": "object" }` | `load_tools` returns the schema as text | Built by us, tested on Haiku 4.5 |
+| Claude 4.5 and later on Bedrock Converse, `strictTools` off | Pinned tools, `load_tools`, and one stub per deferred tool: real name, full description, schema `{ "type": "object" }` | `load_tools` returns the schema as text | Built by us, prototyped on Haiku 4.5 |
 | Everyone else | Every spec, no change | n/a | No change |
 
 Notes per provider:
@@ -219,7 +219,7 @@ ToolReferenceBlock  -> { type: 'tool_reference', tool_name: name }
 deferred spec       -> { type: 'function', ...spec, defer_loading: true }
 load_tools spec     -> { type: 'tool_search' }                // hosted, the API loads the schema
 
-// models/bedrock.ts: 'stubs' on Claude with strictTools off
+// models/bedrock.ts: 'stubs' on Claude 4.5 and later with strictTools off
 deferred spec       -> { name, description: `${description} Call load_tools with this name for its parameters first.`,
                          inputSchema: { json: { type: 'object' } } }
 ToolReferenceBlock  -> text: `${name} parameters: ${JSON.stringify(definition.inputSchema)}`
@@ -293,7 +293,7 @@ agent = Agent(
 
 ## Alternatives considered
 
-- Use tool selection alone for cost, by replacing the tools list per call: with caching on, cost ranged from −35% to +37% in our test. Selection still has its own role (see How Hide fits).
+- Use tool selection alone for cost, by replacing the tools list per call: with caching on, cost ranged from −35% to +37% in our test (Appendix C). Selection still has its own role (see How Hide fits).
 - Summary stubs that keep the schema: work on every model, but save only about 17% on realistic catalogs, and they cut the description.
 - Defer on every model: little to gain on cheap models, and models with constrained decoding can't take an open stub schema.
 - Gateway meta-tools (`search_tools`, `execute_tool`): the tools list never changes, but hooks, telemetry, and permissions see `execute_tool` instead of the real tool.
@@ -305,7 +305,7 @@ Related, separate work: SDK support for preserved thinking. This design is alrea
 
 ### Phase 1: native support per provider
 
-Today neither provider can run native tool search. Tool specs have no `defer_loading`, and the provider's search items are dropped from history. Python's Responses provider says so outright: "tool_search (not supported): Requires defer_loading on function tools" (`openai_responses.py:14`). Users mark tools with `deferLoading: true` themselves in this phase.
+Today neither provider can run native tool search. Tool specs have no `defer_loading`, and the provider's search items are dropped from history. Python's Responses provider documents it: "tool_search (not supported): Requires defer_loading on function tools" (`openai_responses.py:14`). Users mark tools with `deferLoading: true` themselves in this phase.
 
 **1. Claude API: native tool search**
 - Shared pieces, added here and reused by PR 2:
@@ -351,10 +351,10 @@ Folds into the phase 1 providers, so users don't mark tools themselves, then bri
   - A model reporting `'none'` gets the same requests as without the strategy.
 
 **4. Bedrock Converse stubs** (depends on 3)
-- What: `BedrockModel` reports `'stubs'` for Claude with `strictTools` off, renders stubs and schema-as-text load results, and the strategy adds the guard for stubs.
-- Where: `models/bedrock.ts`, reusing the Claude check in `_getCacheStrategy()` (`:491`) [`models/bedrock.py`, `_cache_strategy`]. The guard goes in `skeleton.ts`.
+- What: `BedrockModel` reports `'stubs'` for Claude 4.5 and later with `strictTools` off, renders stubs and schema-as-text load results, and the strategy adds the guard for stubs.
+- Where: `models/bedrock.ts` [`models/bedrock.py`]. The Claude model-ID check already exists for caching (`_getCacheStrategy()`); it needs the 4.5 minimum added. The guard goes in `skeleton.ts`.
 - Done when:
-  - Strict mode or a non-Claude model reports `'none'`.
+  - Strict mode, a non-Claude model, or Claude before 4.5 reports `'none'`.
   - An integ test on Haiku 4.5 matches Appendix C: correct calls, and cache reads on every call after the first write.
   - The guard answers an unloaded stub with its schema, and reloads after summarization removes a load.
 
@@ -362,7 +362,7 @@ Folds into the phase 1 providers, so users don't mark tools themselves, then bri
 
 Before the preset is recommended:
 
-- **Benchmark:** run the real shape (full description, deferred schema) as its own arm in `prototypes/0022-tool-skeleton/`, on Sonnet 4.6 (the SDK default) and Opus, with the unpadded catalog and a real MCP catalog, and repeat each cell.
+- **Benchmark:** run the real shape (full description, deferred schema) as its own arm in `prototypes/0021-tool-skeleton/`, on Sonnet 4.6 (the SDK default) and Opus, with the unpadded catalog and a real MCP catalog, and repeat each cell.
 - **Docs:** a `site/` page for `deferLoading`, the preset, and `Offload.skeleton()`.
 
 ### P1
@@ -378,7 +378,7 @@ Before the preset is recommended:
 
 ### Appendix A - Local Benchmark
 
-Replacing the tools list per call (`Hide.drop`), from `prototypes/0018-tool-selection/README.md`. Claude Haiku 4.5 on Bedrock, 1-hour cache, 60 and 120 synthetic tools, 24 tools kept per call, 4 tasks per cell. Both arms were correct on 16/16.
+Replacing the tools list per call (`Hide.drop`), from [`prototypes/0018-tool-selection`](https://github.com/JackYPCOnline/harness-sdk/tree/prototypes/0018-tool-selection-benchmark/prototypes/0018-tool-selection). Claude Haiku 4.5 on Bedrock, 1-hour cache, 60 and 120 synthetic tools, 24 tools kept per call, 4 tasks per cell. Both arms were correct on 16/16.
 
 | Catalog / history | Prompt tokens Δ | Normalized cost Δ |
 |---|---:|---:|
@@ -405,7 +405,7 @@ OpenAI and Bedrock work the same way: changing tool names, descriptions, schemas
 
 ### Appendix C - Local experiment
 
-Source: `prototypes/0022-tool-skeleton/` on the local branch `prototypes/0022-tool-skeleton`.
+Source: [`prototypes/0021-tool-skeleton`](https://github.com/JackYPCOnline/harness-sdk/tree/prototypes/0021-tool-skeleton/prototypes/0021-tool-skeleton), with the raw results and reproduction commands.
 
 Setup:
 
@@ -435,7 +435,7 @@ What we saw:
 - With stubs, the tools list never changed and no earlier message was edited. Every call after the first write read tools, system, and history from cache.
 - Open-schema stubs took 11 model calls per cell instead of 8: three loads, and a loaded tool was reused without reloading. The guard never fired; Claude always loaded first.
 - Session restore kept the plan. The first request after restoring had the same tools list and system prompt and read 9,549 tokens from cache.
-- The `auto` context manager sized the first call from the full registry. At 120 tools and +16k words it summarized before the first call in every arm.
+- In a separate run with the `auto` context manager, the first call was sized from the full registry. At 120 tools and +16k words it summarized before the first call in every arm, including the stub arms.
 
 How much of a spec is schema: 64% across our Python vended tools (`file_editor` 85%, `http_request` 82%). The test catalog is only 17%, because its descriptions are padded. Estimated tools section for the proposed shape at 120 tools, which we didn't run as its own arm:
 
@@ -444,5 +444,7 @@ How much of a spec is schema: 64% across our Python vended tools (`file_editor` 
 | No padding | 65% | ~25.4K | ~10.8K | −58% |
 | 3 repeats | 38% | ~42.3K | ~27.7K | −35% |
 | 12 repeats (measured) | 17% | ~93.1K | ~78.4K | −16% |
+
+On the unpadded catalog, summary stubs come to about 21.1K (−17%), because they keep the schema.
 
 Limitations: one run per cell, one model, Converse only, synthetic descriptions, and prompts that state the argument values. Total cost was about $6 at Haiku list prices.
