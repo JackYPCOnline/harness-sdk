@@ -28,8 +28,8 @@ After you create an A2A server (see [Creating an A2A Server](index.md#creating-a
 | `agent_factory` | `Callable[[str], Agent]` | `None` | Takes a `context_id` and returns a dedicated agent for that context. Recommended. |
 | `agent` | `Agent` | `None` | A single agent reused across every context. Deprecated; emits a `DeprecationWarning`. |
 | `max_contexts` | `int` | `1000` | Maximum number of contexts retained at once. The least recently used context is evicted beyond this. Must be at least 1. |
-| `host` | `str` | `"127.0.0.1"` | Address `serve()` binds to. |
-| `port` | `int` | `9000` | Port `serve()` binds to. |
+| `host` | `str` | `"127.0.0.1"` | Address [`serve()`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.serve) binds to. |
+| `port` | `int` | `9000` | Port [`serve()`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.serve) binds to. |
 | `http_url` | `str` | `None` | Public URL advertised in the agent card. A path component enables [path-based mounting](#path-based-mounting). |
 | `serve_at_root` | `bool` | `False` | Serves at `/` even when `http_url` contains a path. |
 | `version` | `str` | `"0.0.1"` | Agent version advertised in the agent card. |
@@ -87,7 +87,7 @@ The server builds the [agent card](index.md#key-concepts) that clients use to di
 
 The card `name` and `description` come from the agent. Both are required: building the app raises `ValueError` when either is empty.
 
-After construction, override the advertised URL with [`agent_card_url`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.agent_card_url) and the advertised skills with [`agent_skills`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.agent_skills). The card is built when `serve()`, `to_starlette_app()`, or `to_fastapi_app()` runs, so set both before that call.
+After construction, override the advertised URL with [`agent_card_url`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.agent_card_url) and the advertised skills with [`agent_skills`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.agent_skills). The card is built when [`serve()`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.serve), [`to_starlette_app()`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.to_starlette_app), or [`to_fastapi_app()`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.to_fastapi_app) runs, so set both before that call.
 
 ```python
 from a2a.types import AgentSkill
@@ -151,7 +151,7 @@ a2a_server.serve(app_type="fastapi", host="0.0.0.0", port=8080, log_level="warni
 | `port` | Constructor `port` | Overrides the bind port. |
 | `**kwargs` | None | Forwarded to `uvicorn.run()`. |
 
-Overriding `host` or `port` also updates the advertised URL, unless `http_url` was set. `serve()` logs startup errors instead of raising them.
+Overriding `host` or `port` also updates the advertised URL, unless `http_url` was set. [`serve()`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.serve) logs startup errors instead of raising them.
 
 </Tab>
 <Tab label="TypeScript">
@@ -169,7 +169,7 @@ Overriding `host` or `port` also updates the advertised URL, unless `http_url` w
 
 ## Advanced Server Customization
 
-Use these when the `serve()` defaults do not fit your deployment.
+Use these when the <Syntax py="serve()" ts="serve()" pyHref="@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.serve" /> defaults do not fit your deployment.
 
 ### Embedding in an Existing App
 
@@ -294,7 +294,7 @@ Every A2A server uses an in-memory task store by default, so task state is lost 
 <Tabs>
 <Tab label="Python">
 
-`A2AServer` forwards `task_store`, `queue_manager`, `push_config_store`, and `push_sender` to the A2A SDK `DefaultRequestHandler`. Pass any implementation of the matching interface:
+[`A2AServer`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer) forwards `task_store`, `queue_manager`, `push_config_store`, and `push_sender` to the A2A SDK `DefaultRequestHandler`. Pass any implementation of the matching interface:
 
 | Parameter | Interface |
 |-----------|-----------|
@@ -355,7 +355,7 @@ The server does not authenticate callers by default. Conversations are keyed on 
 <Tabs>
 <Tab label="Python">
 
-Add authentication middleware to the app returned by `to_fastapi_app()` or `to_starlette_app()`, or enforce it at a gateway. See [Embedding in an Existing App](#embedding-in-an-existing-app).
+Add authentication middleware to the app returned by [`to_fastapi_app()`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.to_fastapi_app) or [`to_starlette_app()`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.to_starlette_app), or enforce it at a gateway. See [Embedding in an Existing App](#embedding-in-an-existing-app).
 
 </Tab>
 <Tab label="TypeScript">

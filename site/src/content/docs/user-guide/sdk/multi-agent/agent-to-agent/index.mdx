@@ -41,7 +41,7 @@ Check out the [Native A2A Support samples](https://github.com/strands-agents/sam
 
 The rest of this page builds on three protocol concepts.
 
-**Agent card.** The JSON document an A2A server publishes at `/.well-known/agent-card.json` to describe its agent: name, description, URL, version, skills, and capabilities. Clients read the card to discover an agent before sending it messages. [`A2AAgent`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent) fetches and caches the card for you (see [Fetching the Agent Card](#fetching-the-agent-card)), and the A2A server builds its card from your agent and server options (see [Agent Card](server-configuration.md#agent-card)).
+**Agent card.** The JSON document an A2A server publishes at `/.well-known/agent-card.json` to describe its agent: name, description, URL, version, skills, and capabilities. Clients read the card to discover an agent before sending it messages. <Syntax py="A2AAgent" ts="A2AAgent" pyHref="@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent" /> fetches and caches the card for you (see [Fetching the Agent Card](#fetching-the-agent-card)), and the A2A server builds its card from your agent and server options (see [Agent Card](server-configuration.md#agent-card)).
 
 **Context.** A `contextId` identifies one conversation. Messages that share a `contextId` continue the same conversation, and the Strands server keeps separate conversation state for each one (see [Conversation Isolation](#conversation-isolation)).
 
@@ -74,7 +74,7 @@ npm install @strands-agents/sdk @a2a-js/sdk express
 
 ## Consuming Remote Agents
 
-You consume a remote A2A agent through the [`A2AAgent`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent) class. It wraps the protocol communication behind a familiar interface: you invoke it just like a regular Strands [`Agent`](@api/python/strands.agent.agent#strands.agent.agent.Agent), without resolving agent cards, configuring HTTP clients, building protocol messages, or parsing responses by hand.
+You consume a remote A2A agent through the <Syntax py="A2AAgent" ts="A2AAgent" pyHref="@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent" /> class. It wraps the protocol communication behind a familiar interface: you invoke it just like a regular Strands <Syntax py="Agent" ts="Agent" pyHref="@api/python/strands.agent.agent#strands.agent.agent.Agent" tsHref="@api/typescript/Agent" />, without resolving agent cards, configuring HTTP clients, building protocol messages, or parsing responses by hand.
 
 ### Basic Usage
 
@@ -105,7 +105,7 @@ import { A2AAgent } from '@strands-agents/sdk/a2a'
 </Tab>
 </Tabs>
 
-The `A2AAgent` returns an [`AgentResult`](@api/python/strands.agent.agent_result#strands.agent.agent_result.AgentResult), the same type a local `Agent` returns, so a remote agent drops into code that already handles agent results.
+The <Syntax py="A2AAgent" ts="A2AAgent" pyHref="@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent" /> returns an <Syntax py="AgentResult" ts="AgentResult" pyHref="@api/python/strands.agent.agent_result#strands.agent.agent_result.AgentResult" tsHref="@api/typescript/AgentResult" />, the same type a local <Syntax py="Agent" ts="Agent" pyHref="@api/python/strands.agent.agent#strands.agent.agent.Agent" tsHref="@api/typescript/Agent" /> returns, so a remote agent drops into code that already handles agent results.
 
 ### Configuration Options
 
@@ -165,7 +165,7 @@ asyncio.run(main())
 </Tab>
 <Tab label="TypeScript">
 
-In TypeScript, `invoke` is always async:
+`invoke()` is always async:
 
 ```typescript
 import { A2AAgent } from '@strands-agents/sdk/a2a'
@@ -248,11 +248,11 @@ import { A2AAgent } from '@strands-agents/sdk/a2a'
 
 ## A2AAgent in Multi-Agent Patterns
 
-The [`A2AAgent`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent) class integrates with Strands multi-agent patterns that support it. You can use remote A2A agents as nodes in [Graph](../graph.md) workflows and as [tools in an orchestrator agent](#as-a-tool).
+The <Syntax py="A2AAgent" ts="A2AAgent" pyHref="@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent" /> class integrates with Strands multi-agent patterns that support it. You can use remote A2A agents as nodes in [Graph](../graph.md) workflows and as [tools in an orchestrator agent](#as-a-tool).
 
 ### As a Tool
 
-You can wrap an `A2AAgent` as a tool in an orchestrator agent's toolkit:
+You can wrap an <Syntax py="A2AAgent" ts="A2AAgent" pyHref="@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent" /> as a tool in an orchestrator agent's toolkit:
 
 <Tabs>
 <Tab label="Python">
@@ -290,12 +290,12 @@ orchestrator = Agent(
 
 ### In Graph Workflows
 
-The `A2AAgent` works as a node in [Graph](../graph.md) workflows. See [Remote Agents with A2AAgent](../graph.md#remote-agents-with-a2aagent) for detailed examples of mixing local and remote agents in graph-based pipelines.
+The <Syntax py="A2AAgent" ts="A2AAgent" pyHref="@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent" /> works as a node in [Graph](../graph.md) workflows. See [Remote Agents with A2AAgent](../graph.md#remote-agents-with-a2aagent) for detailed examples of mixing local and remote agents in graph-based pipelines.
 
 ### In Swarm Patterns
 
 :::note[Not yet supported]
-`A2AAgent` is not currently supported in Swarm patterns in either SDK. Swarm coordination relies on tool-based handoffs that require capabilities not yet available in the A2A protocol. Use [Graph](../graph.md) workflows for multi-agent patterns with remote A2A agents.
+<Syntax py="A2AAgent" ts="A2AAgent" pyHref="@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent" /> is not currently supported in Swarm patterns in either SDK. Swarm coordination relies on tool-based handoffs that require capabilities not yet available in the A2A protocol. Use [Graph](../graph.md) workflows for multi-agent patterns with remote A2A agents.
 :::
 
 ## Creating an A2A Server
@@ -348,9 +348,9 @@ The server serves the agent card at `/.well-known/agent-card.json` and handles J
 
 ### Conversation Isolation
 
-The A2A protocol identifies each conversation with a `context_id`. The server isolates conversation state per `context_id` so that callers in different contexts never read or influence each other's history. Two modes control how that isolation works.
+The A2A protocol identifies each conversation with a <Syntax py="context_id" ts="contextId" />. The server isolates conversation state per <Syntax py="context_id" ts="contextId" /> so that callers in different contexts never read or influence each other's history. Two modes control how that isolation works.
 
-The recommended mode is [`agent_factory`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.__init__): you provide a callable that takes a `context_id` and returns a dedicated agent for each conversation, reusing it for later requests in that context. This enables different conversations to run concurrently because each owns an independent agent.
+The recommended mode is an agent factory (<Syntax py="agent_factory" ts="agentFactory" />): you provide a callable that takes a <Syntax py="context_id" ts="contextId" /> and returns a dedicated agent for each conversation, reusing it for later requests in that context. This enables different conversations to run concurrently because each owns an independent agent.
 
 The factory is also where you attach per-conversation state. Both examples below give each conversation its own [session manager](../../agents/session-management.md) keyed on its context ID, so its history persists when the server evicts the context or restarts.
 
@@ -388,14 +388,14 @@ import { A2AExpressServer } from '@strands-agents/sdk/a2a/express'
 </Tab>
 </Tabs>
 
-The server retains at most `max_contexts` contexts at once (default 1000). When that cap is exceeded, the server evicts the least recently used context, and a later request that reuses the evicted `context_id` gets a newly built agent. Without a session manager, that agent starts a fresh conversation. With one, it restores the saved history. Tune this cap to bound memory in long running servers.
+The server retains at most <Syntax py="max_contexts" ts="maxContexts" /> contexts at once (default 1000). When that cap is exceeded, the server evicts the least recently used context, and a later request that reuses the evicted <Syntax py="context_id" ts="contextId" /> gets a newly built agent. Without a session manager, that agent starts a fresh conversation. With one, it restores the saved history. Tune this cap to bound memory in long running servers.
 
-:::caution[`context_id` is not an authentication boundary]
-Contexts are keyed on the client supplied `context_id`. A caller who knows another caller's `context_id` can attach to that conversation. Multi-tenant deployments must enforce authenticated identity at the transport or gateway layer.
+:::caution[The context ID is not an authentication boundary]
+Contexts are keyed on the client supplied <Syntax py="context_id" ts="contextId" />. A caller who knows another caller's <Syntax py="context_id" ts="contextId" /> can attach to that conversation. Multi-tenant deployments must enforce authenticated identity at the transport or gateway layer.
 :::
 
-:::caution[Passing a single `agent` is deprecated]
-In single-agent mode the server reuses one agent across every context, swapping each context's saved state on and off the shared instance under a lock, which serializes all requests. A single `agent` with a configured `session_manager` is rejected, because the session manager would persist every context into one interleaved session. Prefer `agent_factory` for any deployment that serves more than one conversation.
+:::caution[Passing a single agent is deprecated]
+In single-agent mode the server reuses one agent across every context, swapping each context's saved state on and off the shared instance under a lock, which serializes all requests. A single <Syntax py="agent" ts="agent" /> with a configured <Syntax py="session_manager" ts="sessionManager" /> is rejected, because the session manager would persist every context into one interleaved session. Prefer <Syntax py="agent_factory" ts="agentFactory" /> for any deployment that serves more than one conversation.
 :::
 
 ### Answering Interrupts
@@ -432,7 +432,7 @@ def create_agent(context_id: str) -> Agent:
 A2AServer(agent_factory=create_agent).serve()
 ```
 
-Answering an interrupt needs the raw [`a2a-sdk`](https://github.com/a2aproject/a2a-python) client rather than [`A2AAgent`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent). `A2AAgent` speaks in text: it raises `ValueError` if you pass it interrupt responses, and it drops the structured data that carries the interrupt ids when it reads the reply.
+Answering an interrupt needs the raw [`a2a-sdk`](https://github.com/a2aproject/a2a-python) client rather than [`A2AAgent`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent). [`A2AAgent`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent) speaks in text: it raises `ValueError` if you pass it interrupt responses, and it drops the structured data that carries the interrupt ids when it reads the reply.
 
 The server lists the pending interrupts on the `input_required` status message as a `DataPart`, alongside a human-readable `TextPart`. Each interrupt has a server-generated id:
 
