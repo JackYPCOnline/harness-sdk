@@ -334,7 +334,7 @@ ToolReferenceBlock  -> text: `${name} parameters: ${JSON.stringify(definition.in
 
 </details>
 
-## Action Items
+## Work Plan
 
 Related, separate work: SDK support for preserved thinking. This design is already compatible: tools and system never change, and loads are appended. Native tool selection is phase 1 below.
 
