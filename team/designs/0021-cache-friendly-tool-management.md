@@ -173,6 +173,8 @@ Hide's ranking, pins, and protected tools stay the same. Only how its selection 
 The strategy is a new `toolSpecs` target on `Offload.drop`. Dropping a tool spec drops its input schema; the name and description stay, and `load_tools` brings the schema back. Tool names in a target use the `toolspec::` prefix.
 
 ```ts
+import { Agent, BedrockModel, Offload } from '@strands-agents/sdk'
+
 const agent = new Agent({
   model: new BedrockModel({ modelId: 'global.anthropic.claude-sonnet-4-6' }),
   tools,
@@ -191,6 +193,10 @@ const agent = new Agent({
 ```
 
 ```python
+from strands import Agent
+from strands.experimental.context_manager import Offload
+from strands.models import BedrockModel
+
 agent = Agent(
     model=BedrockModel(model_id="global.anthropic.claude-sonnet-4-6"),
     tools=tools,
@@ -214,6 +220,9 @@ agent = Agent(
 Before the strategy ships, users can use the native paths directly by marking tools themselves:
 
 ```ts
+import { Agent, tool } from '@strands-agents/sdk'
+import { AnthropicModel } from '@strands-agents/sdk/models/anthropic'
+
 const createPr = tool({ name: 'github_create_pr', description, inputSchema, callback, deferLoading: true })
 
 const agent = new Agent({
@@ -225,7 +234,23 @@ const agent = new Agent({
 })
 ```
 
+**Public API.** New in both SDKs:
+
+| API | TypeScript | Python | Default |
+|---|---|---|---|
+| Offload target | `Offload.drop('toolSpecs')` | `Offload.drop("tool_specs")` | Every tool spec, any count |
+| Tool filter | `Offload.drop(['!toolspec::shell'])`, `Offload.drop(['toolspec::github_create_pr'])` | Same | n/a |
+| Preset | `'dynamicToolLoading'` | `"dynamic_tool_loading"` | 20-tool minimum |
+| Tool spec flag | `deferLoading: true` | `"deferLoading": True` | Off |
+| Load result block | `ToolReferenceBlock` | Mirrors under the cross-SDK naming rules | n/a |
+| Loader tool | `load_tools`, contributed by the strategy and always pinned | Same | n/a |
+
+Which path a model takes (`'native'`, `'stubs'`, or `'none'`) is internal to each provider, not public API.
+
 ## Interface Sketch
+
+<details>
+<summary>Strategy and provider sketch</summary>
 
 Names may change in implementation.
 
@@ -307,7 +332,9 @@ ToolReferenceBlock  -> text: `${name} parameters: ${JSON.stringify(definition.in
 // every other provider and model: 'none'
 ```
 
-## Action Items --- AI Generated Just read subtitle
+</details>
+
+## Action Items
 
 Related, separate work: SDK support for preserved thinking. This design is already compatible: tools and system never change, and loads are appended. Native tool selection is phase 1 below.
 
