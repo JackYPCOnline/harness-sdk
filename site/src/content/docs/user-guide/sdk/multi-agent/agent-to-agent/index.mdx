@@ -41,11 +41,11 @@ Check out the [Native A2A Support samples](https://github.com/strands-agents/sam
 
 The rest of this page builds on three protocol concepts.
 
-**Agent card.** The JSON document an A2A server publishes at `/.well-known/agent-card.json` to describe its agent: name, description, URL, version, skills, and capabilities. Clients read the card to discover an agent before sending it messages. `A2AAgent` fetches and caches the card for you (see [Fetching the Agent Card](#fetching-the-agent-card)), and the A2A server builds its card from your agent and server options (see [Agent Card](server-configuration.md#agent-card)).
+**Agent card.** The JSON document an A2A server publishes at `/.well-known/agent-card.json` to describe its agent: name, description, URL, version, skills, and capabilities. Clients read the card to discover an agent before sending it messages. [`A2AAgent`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent) fetches and caches the card for you (see [Fetching the Agent Card](#fetching-the-agent-card)), and the A2A server builds its card from your agent and server options (see [Agent Card](server-configuration.md#agent-card)).
 
 **Context.** A `contextId` identifies one conversation. Messages that share a `contextId` continue the same conversation, and the Strands server keeps separate conversation state for each one (see [Conversation Isolation](#conversation-isolation)).
 
-**Task.** Each request the server handles runs as a task, identified by a `taskId`. A task moves through states such as `working`, `input_required`, `completed`, `failed`, and `canceled`. A task in `input_required` waits for the client to answer on the same `taskId` (see [Answering Interrupts](#answering-interrupts)).
+**Task.** Each request the server handles runs as a task, identified by a `taskId`. A task moves through states such as `working`, `input_required`, `completed`, `failed`, and `canceled`. A task in `input_required` waits until the client answers it with a message on the same task (see [Answering Interrupts](#answering-interrupts)).
 
 ## Installation
 
@@ -74,7 +74,7 @@ npm install @strands-agents/sdk @a2a-js/sdk express
 
 ## Consuming Remote Agents
 
-You consume a remote A2A agent through the `A2AAgent` class. It wraps the protocol communication behind a familiar interface: you invoke it just like a regular Strands `Agent`, without resolving agent cards, configuring HTTP clients, building protocol messages, or parsing responses by hand.
+You consume a remote A2A agent through the [`A2AAgent`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent) class. It wraps the protocol communication behind a familiar interface: you invoke it just like a regular Strands [`Agent`](@api/python/strands.agent.agent#strands.agent.agent.Agent), without resolving agent cards, configuring HTTP clients, building protocol messages, or parsing responses by hand.
 
 ### Basic Usage
 
@@ -105,14 +105,14 @@ import { A2AAgent } from '@strands-agents/sdk/a2a'
 </Tab>
 </Tabs>
 
-The `A2AAgent` returns an `AgentResult`, the same type a local `Agent` returns, so a remote agent drops into code that already handles agent results.
+The `A2AAgent` returns an [`AgentResult`](@api/python/strands.agent.agent_result#strands.agent.agent_result.AgentResult), the same type a local `Agent` returns, so a remote agent drops into code that already handles agent results.
 
 ### Configuration Options
 
 <Tabs>
 <Tab label="Python">
 
-The `A2AAgent` constructor accepts these parameters.
+The [`A2AAgent` constructor](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent.__init__) accepts these parameters.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -148,7 +148,7 @@ The agent card is fetched lazily on the first `invoke()`, `stream()`, or `getAge
 <Tabs>
 <Tab label="Python">
 
-For async workflows, use `invoke_async`:
+For async workflows, use [`invoke_async`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent.invoke_async):
 
 ```python
 import asyncio
@@ -183,7 +183,7 @@ console.log(result.lastMessage.content)
 <Tabs>
 <Tab label="Python">
 
-For real-time streaming of responses, use `stream_async`:
+For real-time streaming of responses, use [`stream_async`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent.stream_async):
 
 ```python
 import asyncio
@@ -206,7 +206,7 @@ asyncio.run(main())
 --8<-- "user-guide/sdk/multi-agent/agent-to-agent/agent-to-agent.ts:streaming"
 ```
 
-`A2AAgent.stream()` uses `sendMessageStream` from the A2A SDK. It yields `A2AStreamUpdateEvent` for each protocol event (messages, task status updates, artifact updates) followed by an `AgentResultEvent` with the final result.
+`A2AAgent.stream()` uses `sendMessageStream` from the A2A SDK. It yields `A2AStreamUpdateEvent` for each protocol event (messages, task status updates, artifact updates) followed by an [`AgentResultEvent`](@api/typescript/AgentResultEvent) with the final result.
 
 </Tab>
 </Tabs>
@@ -216,7 +216,7 @@ asyncio.run(main())
 <Tabs>
 <Tab label="Python">
 
-Retrieve the remote agent's card with `get_agent_card()`. The card is fetched once and cached.
+Retrieve the remote agent's card with [`get_agent_card()`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent.get_agent_card). The card is fetched once and cached.
 
 ```python
 import asyncio
@@ -248,7 +248,7 @@ import { A2AAgent } from '@strands-agents/sdk/a2a'
 
 ## A2AAgent in Multi-Agent Patterns
 
-The `A2AAgent` class integrates with Strands multi-agent patterns that support it. Currently, you can use remote A2A agents in [Graph](../graph.md) workflows (Python only) and as [tools in an orchestrator agent](#as-a-tool).
+The [`A2AAgent`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent) class integrates with Strands multi-agent patterns that support it. You can use remote A2A agents as nodes in [Graph](../graph.md) workflows and as [tools in an orchestrator agent](#as-a-tool).
 
 ### As a Tool
 
@@ -350,9 +350,9 @@ The server serves the agent card at `/.well-known/agent-card.json` and handles J
 
 The A2A protocol identifies each conversation with a `context_id`. The server isolates conversation state per `context_id` so that callers in different contexts never read or influence each other's history. Two modes control how that isolation works.
 
-The recommended mode is `agent_factory`: you provide a callable that takes a `context_id` and returns a dedicated agent for each conversation, reusing it for later requests in that context. This enables different conversations to run concurrently because each owns an independent agent.
+The recommended mode is [`agent_factory`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.__init__): you provide a callable that takes a `context_id` and returns a dedicated agent for each conversation, reusing it for later requests in that context. This enables different conversations to run concurrently because each owns an independent agent.
 
-The factory is also where you wire per-conversation concerns such as a `session_manager` to persist that conversation's history.
+The factory is also where you attach per-conversation state. Both examples below give each conversation its own [session manager](../../agents/session-management.md) keyed on its context ID, so its history persists when the server evicts the context or restarts.
 
 <Tabs>
 <Tab label="Python">
@@ -360,11 +360,14 @@ The factory is also where you wire per-conversation concerns such as a `session_
 ```python
 from strands import Agent
 from strands.multiagent.a2a import A2AServer
+from strands.session import FileSessionManager
 
 def create_agent(context_id: str) -> Agent:
     return Agent(
         name="Calculator Agent",
         description="A calculator agent.",
+        # One session per A2A context keeps each conversation's history separate
+        session_manager=FileSessionManager(session_id=context_id),
         callback_handler=None
     )
 
@@ -385,7 +388,7 @@ import { A2AExpressServer } from '@strands-agents/sdk/a2a/express'
 </Tab>
 </Tabs>
 
-The server retains at most `max_contexts` contexts at once (default 1000). When that cap is exceeded, the server evicts the least recently used context, and a later request that reuses the evicted `context_id` starts a fresh conversation. Tune this cap to bound memory in long running servers.
+The server retains at most `max_contexts` contexts at once (default 1000). When that cap is exceeded, the server evicts the least recently used context, and a later request that reuses the evicted `context_id` gets a newly built agent. Without a session manager, that agent starts a fresh conversation. With one, it restores the saved history. Tune this cap to bound memory in long running servers.
 
 :::caution[`context_id` is not an authentication boundary]
 Contexts are keyed on the client supplied `context_id`. A caller who knows another caller's `context_id` can attach to that conversation. Multi-tenant deployments must enforce authenticated identity at the transport or gateway layer.
@@ -401,11 +404,37 @@ In single-agent mode the server reuses one agent across every context, swapping 
 This feature is currently available in the Python SDK only.
 :::
 
-When a tool or hook on the served agent raises an [interrupt](../../interrupts.md), the task moves to the A2A `input_required` state and waits. The client answers it, and the task resumes the paused tool exactly where it stopped.
+When a tool or hook on the served agent raises an [interrupt](../../interrupts.md), the task moves to the A2A `input_required` state and waits for the client to answer. The answer becomes the return value of the [`interrupt()`](@api/python/strands.types.tools#strands.types.tools.ToolContext) call, and the paused tool resumes exactly where it stopped.
 
-Answering an interrupt is the one flow on this page that needs the raw [`a2a-sdk`](https://github.com/a2aproject/a2a-python) client rather than `A2AAgent`. `A2AAgent` speaks in text, so it raises `ValueError` if you pass it interrupt responses, and it drops the `DataPart` carrying the interrupt ids when it reads the reply. The examples below build A2A messages directly.
+This server gives its agent a tool that asks for approval before it launches a campaign:
 
-Each interrupt has a server-generated id, and an answer is bound to the id of the interrupt that raised it. The server advertises the pending interrupts on the `input_required` status message as a `DataPart`, alongside the human-readable `TextPart`:
+```python
+from strands import Agent, ToolContext, tool
+from strands.multiagent.a2a import A2AServer
+
+@tool(context=True)
+def launch_campaign(tool_context: ToolContext, name: str) -> str:
+    """Launch a marketing campaign once a human approves it."""
+    # Pauses the task in input_required until the client answers
+    answer = tool_context.interrupt("approve_campaign", reason={"name": name})
+    if not answer.get("approved"):
+        return f"Campaign {name} was not approved."
+    return f"Campaign {name} launched."
+
+def create_agent(context_id: str) -> Agent:
+    return Agent(
+        name="Campaign Agent",
+        description="Launches marketing campaigns after human approval.",
+        tools=[launch_campaign],
+        callback_handler=None
+    )
+
+A2AServer(agent_factory=create_agent).serve()
+```
+
+Answering an interrupt needs the raw [`a2a-sdk`](https://github.com/a2aproject/a2a-python) client rather than [`A2AAgent`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent). `A2AAgent` speaks in text: it raises `ValueError` if you pass it interrupt responses, and it drops the structured data that carries the interrupt ids when it reads the reply.
+
+The server lists the pending interrupts on the `input_required` status message as a `DataPart`, alongside a human-readable `TextPart`. Each interrupt has a server-generated id:
 
 ```json
 {
@@ -422,7 +451,7 @@ Each interrupt has a server-generated id, and an answer is bound to the id of th
 }
 ```
 
-To answer, send a new message on the same `taskId` containing a `DataPart` that echoes the `interruptId` back with the response:
+To answer, send a new message with the task's `taskId` and `contextId`, containing one `DataPart` per interrupt that echoes its `interruptId` with your response:
 
 ```json
 {
@@ -436,30 +465,70 @@ To answer, send a new message on the same `taskId` containing a `DataPart` that 
 }
 ```
 
-The `response` becomes the return value of the `interrupt()` call that paused the tool. It is any JSON value except `null`, which the server refuses: a null answer would leave the interrupt unsatisfied and re-raise it. `false` and `0` are fine. Answer several interrupts in one message by sending one `DataPart` for each.
+The `response` is any JSON value except `null`. A null answer would leave the interrupt unsatisfied, so the server refuses it. `false` and `0` are fine.
 
-Reading the ids off the status message and answering them:
+This client sends the request, answers every pending interrupt, and repeats until the task leaves `input_required`:
 
 ```python
-from a2a.types import DataPart, Part
+import asyncio
+from uuid import uuid4
 
-# The task parked in input_required; read the interrupts it is waiting on.
-pending = next(
-    part.root.data["interrupts"]
-    for part in task.status.message.parts
-    if isinstance(part.root, DataPart) and "interrupts" in part.root.data
-)
+from a2a.client import ClientConfig, ClientFactory
+from a2a.types import DataPart, Message, Part, Role, Task, TaskState, TextPart
 
-# Answer each one on the same taskId.
-answers = [
-    Part(root=DataPart(data={
-        "interruptResponse": {"interruptId": item["interruptId"], "response": {"approved": True}}
-    }))
-    for item in pending
-]
+def user_message(parts: list[Part], task: Task | None = None) -> Message:
+    # Answers must target the paused task and its context
+    return Message(
+        message_id=uuid4().hex,
+        role=Role.user,
+        parts=parts,
+        task_id=task.id if task else None,
+        context_id=task.context_id if task else None,
+    )
+
+async def send(client, message: Message) -> Task:
+    async for task, _ in client.send_message(message):
+        return task
+
+async def main():
+    client = await ClientFactory.connect(
+        "http://127.0.0.1:9000", client_config=ClientConfig(streaming=False)
+    )
+    prompt = Part(root=TextPart(text="Launch the spring-launch campaign."))
+    task = await send(client, user_message([prompt]))
+
+    # A resumed tool can interrupt again, so answer until the task moves on
+    while task.status.state == TaskState.input_required:
+        pending = next(
+            part.root.data["interrupts"]
+            for part in task.status.message.parts
+            if isinstance(part.root, DataPart) and "interrupts" in part.root.data
+        )
+        answers = [
+            Part(root=DataPart(data={
+                "interruptResponse": {
+                    "interruptId": item["interruptId"],
+                    "response": {"approved": True},
+                }
+            }))
+            for item in pending
+        ]
+        task = await send(client, user_message(answers, task))
+
+    print(task.status.state)
+    for artifact in task.artifacts or []:
+        for part in artifact.parts:
+            if isinstance(part.root, TextPart):
+                print(part.root.text)
+
+asyncio.run(main())
+
+# Typical output:
+# TaskState.completed
+# The spring-launch campaign has been launched.
 ```
 
-The server rejects an answer it cannot bind, before the agent runs, so a refused answer leaves the interrupt pending and the task still answerable. An answer is rejected when:
+The server validates an answer before the agent runs and rejects one it cannot bind with a JSON-RPC invalid-params error. The interrupt stays pending, so the task is still answerable. An answer is rejected when:
 
 - its `interruptId` does not match an interrupt the task is waiting on
 - no interrupt is pending

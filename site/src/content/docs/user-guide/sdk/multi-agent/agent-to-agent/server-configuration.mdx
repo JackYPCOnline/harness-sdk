@@ -21,7 +21,7 @@ After you create an A2A server (see [Creating an A2A Server](index.md#creating-a
 <Tabs>
 <Tab label="Python">
 
-`A2AServer` is imported from `strands.multiagent.a2a`. The `agent` parameter is positional; every other parameter is keyword-only.
+[`A2AServer`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer) is imported from `strands.multiagent.a2a`. The `agent` parameter is positional; every other parameter is keyword-only.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -87,7 +87,7 @@ The server builds the [agent card](index.md#key-concepts) that clients use to di
 
 The card `name` and `description` come from the agent. Both are required: building the app raises `ValueError` when either is empty.
 
-After construction, override the advertised URL with `agent_card_url` and the advertised skills with `agent_skills`. The card is built when `serve()`, `to_starlette_app()`, or `to_fastapi_app()` runs, so set both before that call.
+After construction, override the advertised URL with [`agent_card_url`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.agent_card_url) and the advertised skills with [`agent_skills`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.agent_skills). The card is built when `serve()`, `to_starlette_app()`, or `to_fastapi_app()` runs, so set both before that call.
 
 ```python
 from a2a.types import AgentSkill
@@ -138,7 +138,7 @@ The card `name` comes from the config. The card `description` falls back to the 
 <Tabs>
 <Tab label="Python">
 
-`serve()` starts uvicorn and blocks until shutdown.
+[`serve()`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.serve) starts uvicorn and blocks until shutdown.
 
 ```python
 a2a_server.serve(app_type="fastapi", host="0.0.0.0", port=8080, log_level="warning")
@@ -178,7 +178,7 @@ Build the server into your own application to add routes, middleware, or lifecyc
 <Tabs>
 <Tab label="Python">
 
-`to_fastapi_app()` and `to_starlette_app()` return the application without starting it. `app_kwargs` is forwarded to the FastAPI or Starlette constructor.
+[`to_fastapi_app()`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.to_fastapi_app) and [`to_starlette_app()`](@api/python/strands.multiagent.a2a.server#strands.multiagent.a2a.server.A2AServer.to_starlette_app) return the application without starting it. `app_kwargs` is forwarded to the FastAPI or Starlette constructor.
 
 ```python
 from contextlib import asynccontextmanager
