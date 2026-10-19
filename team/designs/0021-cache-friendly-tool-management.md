@@ -65,13 +65,24 @@ Given those scope and definition, to achieve cache-friendly and cheaper, there a
 - The catalog is fixed per conversation. Once tools are declared, they stay declared. Changes are appended, never replaced.
 - Native model support first. When the provider supports it, don't change the tools list to control which tools the model sees. Use the provider's deferred loading, mostly add tools, and rarely remove them.
 
-### Solution 
+### Solution
 
-For those model providers don't support native tool adding/reducing, our baseline doesn't change. We should focus on catalog never change, order keeps consistent.
+Every tool is declared once, and the tools list never changes. Changes to what the model can use are appended to the messages as a provider-neutral block, and each provider renders that block in its own wire format.
 
-So, we could do that by appending messages. Model always sees each tool's name and description, and parameter schema loads on demand.
+**Adding a tool.** The neutral block is `ToolReferenceBlock`. Claude renders it as `tool_reference`, OpenAI as hosted tool search output, and Claude on Bedrock Converse as the schema in text (see How it fits each provider, below).
 
-Any provider can add or remove tools between turns, but only by changing the tools list, which breaks the cache (Appendix B). That's why the fallback appends instead.
+**Who decides to add a tool.** In this design, the model decides. It calls `load_tools` (or the provider's tool search) when it wants a tool, so the block arrives in a tool result. Later, a context manager policy such as Hide's relevance ranking can add the same tools without the model asking. On Claude that renders as `tool_addition` in a `role: "system"` message, and on OpenAI as an `additional_tools` item with `role: "developer"`. That's a follow-up, for two reasons:
+
+- The SDK's `Role` is `"user" | "assistant"`, so it can't send either message today. Claude's form is also beta (`inline-tools-2026-09-15`).
+- It needs a policy to pick tools. With the model deciding, this design works without one.
+
+The follow-up reuses this design's plan and `ToolReferenceBlock`. With it, a tool registered after the first call (an MCP refresh) can be added by value on Claude instead of changing the tools list.
+
+**Removing a tool.** Not in this design, because removal saves no cost. A deferred tool costs only its name and description until it's loaded. Once it's loaded, its schema is part of the cached prefix. On OpenAI, removing a loaded tool breaks the cache. Claude's `tool_removal` keeps the cache, so it fits a later policy feature such as permissions.
+
+**What owns hiding and revealing.** The plan, described below, and not the tool registry. The registry stays the full catalog. A `registry.hide()` or `reveal()` would change the tools list and break the cache.
+
+**Providers without native support.** We don't update the tools list and drop the message, because changing the tools list invalidates the tools, system, and message caches (Appendix B). Where the model can take a stub (Claude on Bedrock Converse), the tools list keeps the stub and the schema is appended as text, so the request only grows at the end. Every other model gets every spec, as today.
 
 ### Recommended: defer tool schemas and load them on demand
 
@@ -83,7 +94,7 @@ On the first model call of a conversation, the context manager makes a plan:
 - Deferred: name and description sent. The schema loads when the model asks for it.
 - Loaded: deferred tools whose schema is already loaded. Loads are appended to the messages.
 
-The plan is the primitive that owns hiding and revealing. The tool registry stays the full catalog. The plan is made once per conversation and saved with the session, so later calls and restored sessions send a byte-identical tools list.
+The plan is made once per conversation and saved with the session, so later calls and restored sessions send a byte-identical tools list.
 
 Loading goes through `load_tools`, an ordinary SDK-protected tool. The model calls it with one or more tool names, and the normal tool loop appends its result like any other tool result. Middleware never adds or edits messages. It only renders the per-call tools list from the plan.
 
@@ -127,7 +138,7 @@ To keep the cache valid:
 - On the stub path the provider doesn't enforce the schema. Typed tools validate their input in the SDK; raw JSON-schema tools rely on the model following the loaded schema.
 - Only Claude Haiku 4.5 on Converse is tested so far. Other models get no savings until their provider's rule includes them.
 - Small catalogs gain nothing, so the preset starts at 20 tools.
-- Tools registered after the first call (an MCP refresh, a tool added at runtime) change the tools list. That misses the cache, and on Claude Fable 5.1 and newer it also invalidates preserved thinking. Native push (P1) fixes this on Claude and OpenAI.
+- Tools registered after the first call (an MCP refresh, a tool added at runtime) change the tools list. That misses the cache, and on Claude Fable 5.1 and newer it also invalidates preserved thinking. The policy-driven follow-up fixes this on Claude by adding the tool by value (see Solution).
 - A model switch mid-conversation keeps the first model's plan. If the new model takes a different path, the strategy has to fall back to sending every spec.
 
 ### Alternative: tool selection alone for cost
@@ -161,8 +172,8 @@ Hide (#4921) and this design look at tools from different angles. Hide is tool s
 | Model | Hide's selection goes through |
 |---|---|
 | Doesn't defer, no prompt caching | Replacing the tools list, as Hide does today. With no cache, there's nothing to break |
-| Deferral available | The search behind `load_tools`: the model asks with a query and Hide ranks the matches (P1). This matters for very large catalogs, where even names and descriptions get big |
-| Native push available (P1) | Appended `tool_addition`/`tool_removal` on Claude, `additional_tools` on OpenAI |
+| Deferral available | The search behind `load_tools`: the model asks with a query and Hide ranks the matches (follow-up). This matters for very large catalogs, where even names and descriptions get big |
+| Policy-driven adds available (follow-up, see Solution) | Appended `tool_addition`/`tool_removal` on Claude, `additional_tools` on OpenAI |
 
 OpenAI's `allowed_tools` can also limit which declared tools the model calls without changing the tools list, but it saves no tokens.
 
@@ -233,19 +244,6 @@ const agent = new Agent({
   tools: [createPr, ...otherTools],
 })
 ```
-
-**Public API.** New in both SDKs:
-
-| API | TypeScript | Python | Default |
-|---|---|---|---|
-| Offload target | `Offload.drop('toolSpecs')` | `Offload.drop("tool_specs")` | Every tool spec, any count |
-| Tool filter | `Offload.drop(['!toolspec::shell'])`, `Offload.drop(['toolspec::github_create_pr'])` | Same | n/a |
-| Preset | `'dynamicToolLoading'` | `"dynamic_tool_loading"` | 20-tool minimum |
-| Tool spec flag | `deferLoading: true` | `"deferLoading": True` | Off |
-| Load result block | `ToolReferenceBlock` | Mirrors under the cross-SDK naming rules | n/a |
-| Loader tool | `load_tools`, contributed by the strategy and always pinned | Same | n/a |
-
-Which path a model takes (`'native'`, `'stubs'`, or `'none'`) is internal to each provider, not public API.
 
 ## Interface Sketch
 
@@ -333,79 +331,6 @@ ToolReferenceBlock  -> text: `${name} parameters: ${JSON.stringify(definition.in
 ```
 
 </details>
-
-## Work Plan
-
-Related, separate work: SDK support for preserved thinking. This design is already compatible: tools and system never change, and loads are appended. Native tool selection is phase 1 below.
-
-### Phase 1: native support per provider
-
-Today neither provider can run native tool search. Tool specs have no `defer_loading`, and the provider's search items are dropped from history. Python's Responses provider documents it: "tool_search (not supported): Requires defer_loading on function tools" (`openai_responses.py:14`). Users mark tools with `deferLoading: true` themselves in this phase.
-
-**1. Claude API: native tool search**
-- Shared pieces, added here and reused by PR 2:
-  - `ToolSpec.deferLoading`. Providers without native support ignore it and send the full spec.
-  - A content block that keeps a provider's native items unchanged in history and in session snapshots. The SDK has none today. Other providers skip it.
-  - The token estimate skips deferred specs, since the API keeps them out of context.
-- Claude API pieces:
-  - Request: render `defer_loading: true`. No beta header is needed.
-  - Response: keep `server_tool_use` and `tool_search_tool_result` in the assistant message and send them back unchanged. Today they're dropped (`SERVER_TOOL_BLOCK_TYPES`, `anthropic.ts:36` [`anthropic.py:51`]), and the API needs them in history to keep discovered tools loaded.
-  - Tool results: `ToolReferenceBlock`, rendered as `tool_reference`, so a custom search tool can return references. Phase 2's `load_tools` builds on it.
-  - Cache point: move it to a non-deferred tool. Today it goes on the last tool, and the API rejects `cache_control` on a deferred tool.
-- User surface: `deferLoading: true` on tools, plus `{ type: 'tool_search_tool_bm25_20251119', name: 'tool_search_tool_bm25' }` (or the regex variant) in `anthropicTools`.
-- Models: Claude Haiku 4.5, Sonnet 4.5, Opus 4.5, and later. Opus 4.1 and earlier don't support tool search ([tool search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)).
-- Where: `tools/types.ts`, `types/messages.ts`, `models/anthropic.ts` [`types/tools.py`, `types/content.py`, `models/anthropic.py`]. The contributor branch has a start.
-- Done when: integ tests over two turns, with cache reads on the second:
-  - Server search finds, loads, and calls a deferred tool.
-  - A custom search tool returns `ToolReferenceBlock`, and the model calls the referenced tool.
-
-**2. OpenAI Responses: native tool search** (reuses the shared pieces from PR 1)
-- Request: render `defer_loading: true` on deferred functions. `{ type: 'tool_search' }` already passes through as a built-in tool in `params.tools`.
-- Response: keep `tool_search_call` and `tool_search_output` items and send them back in `input`. Today the adapter only maps `function_call` items (`responses-adapter.ts:503`).
-- Remove the "not supported" note in `openai_responses.py`.
-- Models: gpt-5.4 and later.
-- Where: `models/openai/responses-adapter.ts` [`models/openai_responses.py`].
-- Done when: an integ test on gpt-5.4 loads and calls a deferred function over two turns.
-
-### Phase 2: the context manager strategy
-
-Folds into the phase 1 providers, so users don't mark tools themselves, then brings the same strategy to Bedrock Converse.
-
-**3. `toolSpecs` target on Claude API and OpenAI Responses** (depends on 1 and 2)
-- What:
-  - `Offload.drop('toolSpecs')` with the `toolspec::` filter, the plan, and the `dynamicToolLoading` preset. The strategy sets `deferLoading` from the plan.
-  - `load_tools`, contributed through a new `ContextStrategy.getTools?()`. On Claude it's a custom tool search: its description lists each deferred tool's name and description, and it returns `ToolReferenceBlock`, rendered as `tool_reference`. On OpenAI it renders as the hosted `tool_search` from PR 2.
-  - Each provider reports the internal capability (`'native'`), and every other provider reports `'none'`.
-  - Truncate and drop skip results from protected tools. Today that skip is hard-coded to `retrieve_context`, and only with the stash on (`offload/base.ts:407`).
-  - The cold-start estimate counts the tools list the model actually gets. Today it counts the full registry before middleware runs (`agent.ts:2139`), and in our test that fired summarization before the first call at 120 tools (Appendix C).
-  - Hide (#4921): if both are configured, Hide skips its tools-list rewrite while the plan is active. Rewriting the tools list breaks the cache, and on Claude Fable 5.1 and newer it also breaks preserved thinking. This lands in whichever of the two PRs merges second.
-- Where: `context-manager/strategies/offload/drop.ts`, `offload/base.ts`, `presets.ts`, and `load_tools` next to `context-manager/retrieval-tool.ts` [same names under `_context_manager/`].
-- Done when, with the preset on both providers:
-  - The tools list is byte-identical on every call and after a session restore, and no earlier message is edited.
-  - The model loads and calls a deferred tool, and protected tools are never deferred.
-  - A model reporting `'none'` gets the same requests as without the strategy.
-
-**4. Bedrock Converse stubs** (depends on 3)
-- What: `BedrockModel` reports `'stubs'` for Claude 4.5 and later with `strictTools` off, renders stubs and schema-as-text load results, and the strategy adds the guard for stubs.
-- Where: `models/bedrock.ts` [`models/bedrock.py`]. The Claude model-ID check already exists for caching (`_getCacheStrategy()`); it needs the 4.5 minimum added. The guard goes in `drop.ts`.
-- Done when:
-  - Strict mode, a non-Claude model, or Claude before 4.5 reports `'none'`.
-  - An integ test on Haiku 4.5 matches Appendix C: correct calls, and cache reads on every call after the first write.
-  - The guard answers an unloaded stub with its schema, and reloads after summarization removes a load.
-
-### Validation and docs
-
-Before the preset is recommended:
-
-- **Benchmark:** run the real shape (full description, deferred schema) as its own arm in `prototypes/0021-tool-skeleton/`, on Sonnet 4.6 (the SDK default) and Opus, with the unpadded catalog and a real MCP catalog, and repeat each cell.
-- **Docs:** a `site/` page for `deferLoading`, the preset, and `Offload.drop('toolSpecs')`.
-
-### P1
-
-- MCP tool order: register tools from several MCP clients in config order, not in whatever order the servers answer (`agent.ts:849-858`). It's a standalone fix and can land any time.
-- `load_tools` query: accept a `query` and rank matches with Hide's search, for very large catalogs.
-- Native push: `tool_addition` on Claude and `additional_tools` on OpenAI. Needs system or developer messages in the SDK. Then move Hide onto it.
-- Decide whether the preset joins `auto`.
 
 ## Willingness to Implement
 
