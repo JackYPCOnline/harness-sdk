@@ -74,7 +74,7 @@ npm install @strands-agents/sdk @a2a-js/sdk express
 
 ## Consuming Remote Agents
 
-You consume a remote A2A agent through the `A2AAgent` class. It wraps the protocol communication behind a familiar interface: you invoke it just like a local Strands agent, without resolving agent cards, configuring HTTP clients, building protocol messages, or parsing responses by hand.
+You consume a remote A2A agent through the `A2AAgent` class. It wraps the protocol communication behind a familiar interface: you invoke it just like a regular Strands [`Agent`](@api/python/strands.agent.agent#strands.agent.agent.Agent) (Python) / [`Agent`](@api/typescript/Agent) (TypeScript), without resolving agent cards, configuring HTTP clients, building protocol messages, or parsing responses by hand.
 
 ### Basic Usage
 
@@ -93,8 +93,6 @@ print(result.message)
 # {'role': 'assistant', 'content': [{'text': '10^6 = 1,000,000'}]}
 ```
 
-[`A2AAgent`](@api/python/strands.agent.a2a_agent#strands.agent.a2a_agent.A2AAgent) returns an [`AgentResult`](@api/python/strands.agent.agent_result#strands.agent.agent_result.AgentResult), the same type a local [`Agent`](@api/python/strands.agent.agent#strands.agent.agent.Agent) returns, so a remote agent drops into code that already handles agent results.
-
 </Tab>
 <Tab label="TypeScript">
 
@@ -104,10 +102,10 @@ import { A2AAgent } from '@strands-agents/sdk/a2a'
 --8<-- "user-guide/sdk/multi-agent/agent-to-agent/agent-to-agent.ts:basic_usage"
 ```
 
-`A2AAgent` returns an [`AgentResult`](@api/typescript/AgentResult), the same type a local [`Agent`](@api/typescript/Agent) returns, so a remote agent drops into code that already handles agent results.
-
 </Tab>
 </Tabs>
+
+The `A2AAgent` returns an [`AgentResult`](@api/python/strands.agent.agent_result#strands.agent.agent_result.AgentResult) (Python) / [`AgentResult`](@api/typescript/AgentResult) (TypeScript), the same type a local agent returns, so a remote agent drops into code that already handles agent results.
 
 ### Configuration Options
 
