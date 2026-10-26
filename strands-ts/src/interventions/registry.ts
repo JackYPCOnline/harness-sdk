@@ -15,6 +15,7 @@ import { InterventionHandler } from './handler.js'
 import { InterruptError } from '../interrupt.js'
 import { logger } from '../logging/logger.js'
 import type { JSONValue } from '../types/json.js'
+import type { AppendMessageFn } from '../agent/tool-caller.js'
 
 type LifecycleMethod = 'beforeInvocation' | 'beforeToolCall' | 'afterToolCall' | 'beforeModelCall' | 'afterModelCall'
 
@@ -29,8 +30,9 @@ type LifecycleMethod = 'beforeInvocation' | 'beforeToolCall' | 'afterToolCall' |
  */
 export class InterventionRegistry {
   private readonly _handlers: InterventionHandler[]
+  private readonly _appendMessage: AppendMessageFn
 
-  constructor(handlers: InterventionHandler[], hookRegistry: HookRegistry) {
+  constructor(handlers: InterventionHandler[], hookRegistry: HookRegistry, appendMessage: AppendMessageFn) {
     const seen = new Set<string>()
     for (const h of handlers) {
       if (seen.has(h.name)) {
@@ -39,6 +41,7 @@ export class InterventionRegistry {
       seen.add(h.name)
     }
     this._handlers = handlers
+    this._appendMessage = appendMessage
     this._registerHooks(hookRegistry)
   }
 
@@ -153,15 +156,13 @@ export class InterventionRegistry {
   // Guide on beforeModelCall injects feedback as a user message so the model sees
   // it on this call, rather than cancelling (which would end the invocation).
   private async _onBeforeModelCall(event: BeforeModelCallEvent): Promise<void> {
-    return this._dispatch(event, 'beforeModelCall', (action, handlerName) => {
+    return this._dispatch(event, 'beforeModelCall', async (action, handlerName) => {
       switch (action.type) {
         case 'deny':
           event.cancel = `DENIED: ${action.reason}`
           return true
         case 'guide':
-          // Direct push bypasses MessageAddedEvent and conversation manager.
-          // This matches what plugins can do today via event.agent.messages.
-          event.agent.messages.push(new Message({ role: 'user', content: [new TextBlock(action.feedback)] }))
+          await this._appendGuidance(event, action.feedback)
           return false
         case 'transform':
           action.apply(event)
@@ -176,15 +177,11 @@ export class InterventionRegistry {
   }
 
   private async _onAfterModelCall(event: AfterModelCallEvent): Promise<void> {
-    return this._dispatch(event, 'afterModelCall', (action, handlerName) => {
+    return this._dispatch(event, 'afterModelCall', async (action, handlerName) => {
       switch (action.type) {
         case 'guide':
           event.retry = true
-          // Direct push bypasses MessageAddedEvent and conversation manager, so this
-          // message won't trigger context management and could push the context over
-          // the limit. LocalAgent doesn't expose a message-append method that goes
-          // through the hook pipeline. This matches what plugins can do today.
-          event.agent.messages.push(new Message({ role: 'user', content: [new TextBlock(action.feedback)] }))
+          await this._appendGuidance(event, action.feedback)
           return false
         case 'transform':
           action.apply(event)
@@ -196,6 +193,12 @@ export class InterventionRegistry {
           return false
       }
     })
+  }
+
+  /** Appends guidance as a user message through the agent, so `MessageAddedEvent` fires for it. */
+  private _appendGuidance(event: BeforeModelCallEvent | AfterModelCallEvent, feedback: string): Promise<void> {
+    const message = new Message({ role: 'user', content: [new TextBlock(feedback)] })
+    return this._appendMessage(message, event.invocationState, event.invocationContext)
   }
 
   /**
@@ -211,7 +214,7 @@ export class InterventionRegistry {
   private async _dispatch(
     event: HookableEvent,
     method: LifecycleMethod,
-    apply: (action: InterventionAction, handlerName: string) => boolean
+    apply: (action: InterventionAction, handlerName: string) => boolean | Promise<boolean>
   ): Promise<void> {
     logger.debug(`event=<${method}> | dispatching to ${this._handlers.length} handler(s)`)
     const guides: Array<{ handlerName: string; action: Guide }> = []
@@ -240,7 +243,7 @@ export class InterventionRegistry {
         guides.push({ handlerName: handler.name, action })
       } else {
         try {
-          if (apply(action, handler.name)) {
+          if (await apply(action, handler.name)) {
             logger.debug(`handler=<${handler.name}>, event=<${method}> | short-circuited`)
             return
           }
@@ -252,7 +255,7 @@ export class InterventionRegistry {
           }
           const errorAction = this._handleError(handler, method, error)
           if (errorAction) {
-            if (apply(errorAction, handler.name)) {
+            if (await apply(errorAction, handler.name)) {
               return
             }
           }
@@ -265,7 +268,7 @@ export class InterventionRegistry {
     if (guides.length > 0) {
       logger.debug(`event=<${method}> | applying accumulated guide from ${guides.length} handler(s)`)
       const feedback = guides.map((g) => `[${g.handlerName}] ${g.action.feedback}`).join('\n')
-      apply({ type: 'guide', feedback }, '')
+      await apply({ type: 'guide', feedback }, '')
     }
   }
 

@@ -13,6 +13,7 @@ import type { ToolResultBlock } from '../types/messages.js'
 import { Message } from '../types/messages.js'
 import { TextBlock, ToolUseBlock } from '../types/messages.js'
 import type { InvocationState } from '../types/agent.js'
+import type { InvocationContext } from './invocation-context.js'
 import type { Tool, ToolContext } from '../tools/tool.js'
 import { ToolStreamEvent } from '../tools/tool.js'
 import type { ToolUse } from '../tools/types.js'
@@ -72,10 +73,14 @@ export type ToolCallerProxy = Record<string, ToolHandle>
  *
  * Defined here (not in agent.ts) so that the message-mutation capability stays
  * encapsulated — only the Agent knows how to mutate messages safely, and it
- * passes a bound helper into ToolCaller. ToolCaller never gets direct access
- * to `agent.messages` or the hooks registry.
+ * passes a bound helper into ToolCaller and InterventionRegistry. ToolCaller
+ * never gets direct access to `agent.messages` or the hooks registry.
  */
-export type AppendMessageFn = (message: Message, invocationState?: InvocationState) => Promise<void>
+export type AppendMessageFn = (
+  message: Message,
+  invocationState?: InvocationState,
+  invocationContext?: InvocationContext
+) => Promise<void>
 
 /**
  * Provides direct tool calling through the agent.

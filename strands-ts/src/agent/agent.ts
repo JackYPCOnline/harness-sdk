@@ -35,7 +35,12 @@ import { ModelRouter } from '../models/routing/router.js'
 import type { BaseModelConfig, StreamAggregatedResult, StreamOptions } from '../models/model.js'
 import { ModelPlugin } from '../plugins/model-plugin.js'
 import { totalPromptTokens, isModelStreamEvent } from '../models/streaming.js'
-import { InvocationContextImpl, reachedLimit, resolveInvocationContext } from './invocation-context.js'
+import {
+  InvocationContextImpl,
+  reachedLimit,
+  resolveInvocationContext,
+  type InvocationContext,
+} from './invocation-context.js'
 import { ToolRegistry } from '../registry/tool-registry.js'
 import { StateStore } from '../state-store.js'
 import { serializeStateSerializable, loadStateSerializable } from '../types/serializable.js'
@@ -614,7 +619,12 @@ export class Agent implements LocalAgent, InvokableAgent {
     // Initialize hooks registry
     this._hooksRegistry = new HookRegistryImplementation()
 
-    this._interventionRegistry = new InterventionRegistry(config?.interventions ?? [], this._hooksRegistry)
+    this._interventionRegistry = new InterventionRegistry(
+      config?.interventions ?? [],
+      this._hooksRegistry,
+      (message, invocationState, invocationContext) =>
+        this._appendMessageAndFireHooks(message, invocationState, invocationContext)
+    )
 
     // Initialize middleware registry
     this._middlewareRegistry = new MiddlewareRegistry()
@@ -2777,13 +2787,20 @@ export class Agent implements LocalAgent, InvokableAgent {
   /**
    * Appends a message to the conversation history and fires MessageAddedEvent hooks.
    *
-   * Used by {@link ToolCaller} (via the helper passed to `ToolCaller.create`) for
-   * direct tool calls that cannot yield events into the agent stream. This stays
-   * private — callers outside the agent should never directly mutate messages.
+   * Used by {@link ToolCaller} and {@link InterventionRegistry} (via the helper passed
+   * at creation) for direct tool calls and intervention guidance, which cannot yield
+   * events into the agent stream. This stays private — callers outside the agent
+   * should never directly mutate messages.
    */
-  private async _appendMessageAndFireHooks(message: Message, invocationState: InvocationState = {}): Promise<void> {
+  private async _appendMessageAndFireHooks(
+    message: Message,
+    invocationState: InvocationState = {},
+    invocationContext?: InvocationContext
+  ): Promise<void> {
     this.messages.push(message)
-    await this._hooksRegistry.invokeCallbacks(new MessageAddedEvent({ agent: this, message, invocationState }))
+    await this._hooksRegistry.invokeCallbacks(
+      new MessageAddedEvent({ agent: this, invocationContext, message, invocationState })
+    )
   }
 
   /**
