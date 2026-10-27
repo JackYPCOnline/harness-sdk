@@ -187,6 +187,7 @@ export type ContentBlockData =
   | { video: VideoBlockData }
   | { document: DocumentBlockData }
   | { citations: CitationsBlockData }
+  | { context: ContextBlockData }
 
 export type ContentBlock =
   | TextBlock
@@ -200,6 +201,7 @@ export type ContentBlock =
   | VideoBlock
   | DocumentBlock
   | CitationsBlock
+  | ContextBlock
 
 /**
  * Data for a text block.
@@ -983,8 +985,65 @@ export class GuardContentBlock
 }
 
 /**
+ * Data for a context block.
+ */
+export interface ContextBlockData {
+  /**
+   * Text the app adds to the user turn.
+   */
+  text: string
+}
+
+/**
+ * Text the app adds to a user turn, such as a reminder or recalled memories, kept apart from the user's own words.
+ * It belongs in a user message, after the existing content. The agent sends it to every model as plain text in
+ * that message.
+ *
+ * @example
+ * ```typescript
+ * const message = new Message({
+ *   role: 'user',
+ *   content: [new TextBlock('Refactor the tokenizer.'), new ContextBlock({ text: 'cwd: /repo' })],
+ * })
+ * ```
+ */
+export class ContextBlock implements ContextBlockData, JSONSerializable<{ context: ContextBlockData }> {
+  /**
+   * Discriminator for context content.
+   */
+  readonly type = 'contextBlock' as const
+
+  /**
+   * Text the app adds to the user turn.
+   */
+  readonly text: string
+
+  constructor(data: ContextBlockData) {
+    this.text = data.text
+  }
+
+  /**
+   * Serializes the ContextBlock to a JSON-compatible ContentBlockData object.
+   * Called automatically by JSON.stringify().
+   */
+  toJSON(): { context: ContextBlockData } {
+    return { context: { text: this.text } }
+  }
+
+  /**
+   * Creates a ContextBlock instance from its wrapped data format.
+   *
+   * @param data - Wrapped ContextBlockData to deserialize
+   * @returns ContextBlock instance
+   */
+  static fromJSON(data: { context: ContextBlockData }): ContextBlock {
+    return new ContextBlock(data.context)
+  }
+}
+
+/**
  * Converts ContentBlockData to a ContentBlock instance.
- * Handles all content block types including text, tool use/result, reasoning, cache points, guard content, and media blocks.
+ * Handles all content block types including text, tool use/result, reasoning, cache points, guard content, context, and media blocks.
  *
  * @param data - The content block data to convert
  * @returns A ContentBlock instance of the appropriate type
@@ -1013,6 +1072,8 @@ export function contentBlockFromData(data: ContentBlockData): ContentBlock {
     return DocumentBlock.fromJSON(data)
   } else if ('citations' in data) {
     return CitationsBlock.fromJSON(data)
+  } else if ('context' in data) {
+    return ContextBlock.fromJSON(data)
   } else {
     throw new Error('Unknown ContentBlockData type')
   }

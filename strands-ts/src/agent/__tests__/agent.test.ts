@@ -21,6 +21,7 @@ import {
   ImageBlock,
   VideoBlock,
   DocumentBlock,
+  ContextBlock,
 } from '../../index.js'
 import type { InvokeOptions, MemoryStore } from '../../index.js'
 import { MemoryManager } from '../../index.js'
@@ -2086,6 +2087,23 @@ describe('_estimateInputTokens', () => {
 
     // baseline (200+50) + estimated delta for new user message (15) = 265
     expect(await tokenPromise).toBe(265)
+  })
+})
+
+describe('context blocks', () => {
+  it('sends a context block to the model as text and keeps it in agent.messages', async () => {
+    const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'ok' })
+    const streamSpy = vi.spyOn(model, 'stream')
+    const agent = new Agent({ model, printer: false })
+
+    await agent.invoke([new TextBlock('Refactor the tokenizer.'), new ContextBlock({ text: 'reminder' })])
+
+    const sentMessages = streamSpy.mock.calls[0]![0]
+    expect(sentMessages[0]!.content).toEqual([new TextBlock('Refactor the tokenizer.'), new TextBlock('\n\nreminder')])
+    expect(agent.messages[0]!.content).toEqual([
+      new TextBlock('Refactor the tokenizer.'),
+      new ContextBlock({ text: 'reminder' }),
+    ])
   })
 })
 
