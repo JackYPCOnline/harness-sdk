@@ -90,6 +90,7 @@ All events extend `HookableEvent`, making them both streamable via `agent.stream
 | `BeforeInvocationEvent`  | Triggered at the beginning of a new agent invocation request                                                  |
 | `AfterInvocationEvent`   | Triggered at the end of an agent request, regardless of success or failure. Uses reverse callback ordering    |
 | `MessageAddedEvent`      | Triggered when a message is added to the agent's conversation history                                         |
+| `MessageUpdatedEvent`    | Triggered when the agent replaces a message, keeping its `trackingId`. Hook callbacks only, not `agent.stream()` |
 | `BeforeModelCallEvent`   | Triggered before the model is invoked for inference                                                           |
 | `AfterModelCallEvent`    | Triggered after model invocation completes. Uses reverse callback ordering                                    |
 | `ModelStreamUpdateEvent` | Wraps each transient streaming delta from the model during inference. Access via `.event`                     |
