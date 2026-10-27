@@ -8,7 +8,7 @@ import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 import { foldIntoLastUserMessage } from '../../injection/message-injection.js'
 import { logger } from '../../logging/logger.js'
 import { warnOnce } from '../../logging/warn-once.js'
-import { ContextBlock, Message, TextBlock, ToolResultBlock, type ContentBlock } from '../../types/messages.js'
+import { InjectedBlock, Message, TextBlock, ToolResultBlock, type ContentBlock } from '../../types/messages.js'
 
 // warnOnce logs each message once per process, so a real call can't be asserted in more than one test.
 vi.mock('../../logging/warn-once.js', () => ({
@@ -116,7 +116,7 @@ describe('ModelProxy', () => {
     })
   })
 
-  describe('context blocks', () => {
+  describe('injected blocks', () => {
     /** Sends the messages through the proxy and returns the messages the model received. */
     async function sent(messages: Message[]): Promise<Message[]> {
       const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'ok' })
@@ -141,20 +141,20 @@ describe('ModelProxy', () => {
       )
 
       const messages = [
-        new Message({ role: 'user', content: [...content, new ContextBlock({ text })], trackingId: 'msg-1' }),
+        new Message({ role: 'user', content: [...content, new InjectedBlock({ text })], trackingId: 'msg-1' }),
       ]
 
       expect(await sent(messages)).toEqual(folded)
     })
 
-    it('sends each of several context blocks as its own text block, in place', async () => {
+    it('sends each of several injected blocks as its own text block, in place', async () => {
       const messages = [
         new Message({
           role: 'user',
           content: [
             new TextBlock('Refactor the tokenizer.'),
-            new ContextBlock({ text: 'one' }),
-            new ContextBlock({ text: 'two' }),
+            new InjectedBlock({ text: 'one' }),
+            new InjectedBlock({ text: 'two' }),
           ],
           trackingId: 'msg-1',
           metadata: { custom: { source: 'test' } },
@@ -171,20 +171,20 @@ describe('ModelProxy', () => {
       ])
     })
 
-    it('separates text that follows a context block, without changing how the block is sent', async () => {
+    it('separates text that follows an injected block, without changing how the block is sent', async () => {
       const messages = [
         new Message({
           role: 'user',
           content: [
             new TextBlock('Refactor.'),
-            new ContextBlock({ text: 'reminder' }),
+            new InjectedBlock({ text: 'reminder' }),
             new TextBlock('Also the docs.'),
           ],
           trackingId: 'msg-1',
         }),
         new Message({
           role: 'user',
-          content: [new ContextBlock({ text: 'first' }), new TextBlock('Then the docs.')],
+          content: [new InjectedBlock({ text: 'first' }), new TextBlock('Then the docs.')],
           trackingId: 'msg-2',
         }),
       ]
@@ -203,13 +203,13 @@ describe('ModelProxy', () => {
       ])
     })
 
-    it('sends a context block in an earlier user message too', async () => {
+    it('sends an injected block in an earlier user message too', async () => {
       const answer = new Message({ role: 'assistant', content: [new TextBlock('Done.')], trackingId: 'msg-2' })
       const latest = userMessage('Now the docs.')
       const messages = [
         new Message({
           role: 'user',
-          content: [new TextBlock('Refactor.'), new ContextBlock({ text: 'reminder' })],
+          content: [new TextBlock('Refactor.'), new InjectedBlock({ text: 'reminder' })],
           trackingId: 'msg-1',
         }),
         answer,
@@ -227,14 +227,14 @@ describe('ModelProxy', () => {
       ])
     })
 
-    it('leaves out a context block outside a user message, with a warning', async () => {
+    it('leaves out an injected block outside a user message, with a warning', async () => {
       vi.mocked(warnOnce).mockClear()
       const prompt = userMessage('go')
       const messages = [
         prompt,
         new Message({
           role: 'assistant',
-          content: [new TextBlock('Hi'), new ContextBlock({ text: 'reminder' }), new TextBlock('Bye')],
+          content: [new TextBlock('Hi'), new InjectedBlock({ text: 'reminder' }), new TextBlock('Bye')],
           trackingId: 'msg-2',
         }),
       ]
@@ -244,7 +244,7 @@ describe('ModelProxy', () => {
         new Message({ role: 'assistant', content: [new TextBlock('Hi'), new TextBlock('Bye')], trackingId: 'msg-2' }),
       ])
       expect(vi.mocked(warnOnce).mock.calls).toEqual([
-        [logger, 'role=<assistant> | context block outside a user message | skipping it'],
+        [logger, 'role=<assistant> | injected block outside a user message | skipping it'],
       ])
     })
 
@@ -252,7 +252,7 @@ describe('ModelProxy', () => {
       const messages = [
         new Message({
           role: 'user',
-          content: [new TextBlock('Refactor the tokenizer.'), new ContextBlock({ text: 'reminder' })],
+          content: [new TextBlock('Refactor the tokenizer.'), new InjectedBlock({ text: 'reminder' })],
         }),
       ]
 
@@ -260,11 +260,11 @@ describe('ModelProxy', () => {
 
       expect(messages[0]!.content).toEqual([
         new TextBlock('Refactor the tokenizer.'),
-        new ContextBlock({ text: 'reminder' }),
+        new InjectedBlock({ text: 'reminder' }),
       ])
     })
 
-    it('passes messages without a context block through as they are', async () => {
+    it('passes messages without an injected block through as they are', async () => {
       const messages = [userMessage('go')]
 
       expect(await sent(messages)).toBe(messages)

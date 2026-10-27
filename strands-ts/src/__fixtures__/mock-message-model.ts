@@ -291,7 +291,7 @@ export class MockMessageModel extends Model<BaseModelConfig> {
       case 'documentBlock':
       case 'audioBlock':
       case 'jsonBlock':
-      case 'contextBlock':
+      case 'injectedBlock':
         // These blocks don't generate events in mock - just skip them
         break
 

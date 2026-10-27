@@ -1615,8 +1615,8 @@ export class BedrockModel extends Model<BedrockModelConfig> {
         }
       }
 
-      case 'contextBlock':
-        // ModelProxy sends context blocks as text, so only a call that bypasses it gets here.
+      case 'injectedBlock':
+        // Skipped. ModelProxy sends injected blocks as text, so only a call that bypasses it gets here.
         return undefined
     }
   }

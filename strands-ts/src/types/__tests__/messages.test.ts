@@ -8,7 +8,7 @@ import {
   CachePointBlock,
   GuardContentBlock,
   JsonBlock,
-  ContextBlock,
+  InjectedBlock,
   generateTrackingId,
   type MessageData,
   type SystemPromptData,
@@ -284,13 +284,13 @@ describe('JsonBlock', () => {
   })
 })
 
-describe('ContextBlock', () => {
-  test('creates context block with text', () => {
-    const block = new ContextBlock({ text: 'reminder' })
+describe('InjectedBlock', () => {
+  test('creates injected block with text', () => {
+    const block = new InjectedBlock({ text: 'reminder' })
 
     expect(block).toEqual({
-      type: 'contextBlock',
-      context: { text: 'reminder' },
+      type: 'injectedBlock',
+      injected: { text: 'reminder' },
     })
   })
 })
@@ -415,22 +415,22 @@ describe('Message.fromMessageData', () => {
     expect(message.content[0]!.type).toBe('guardContentBlock')
   })
 
-  it('converts context block data to ContextBlock', () => {
+  it('converts injected block data to InjectedBlock', () => {
     const messageData: MessageData = {
       role: 'user',
-      content: [{ text: 'Refactor the tokenizer.' }, { context: { text: 'reminder' } }],
+      content: [{ text: 'Refactor the tokenizer.' }, { injected: { text: 'reminder' } }],
     }
     const message = Message.fromMessageData(messageData)
-    expect(message.content).toEqual([new TextBlock('Refactor the tokenizer.'), new ContextBlock({ text: 'reminder' })])
+    expect(message.content).toEqual([new TextBlock('Refactor the tokenizer.'), new InjectedBlock({ text: 'reminder' })])
   })
 
-  it('keeps a ContextBlock passed inside message data a ContextBlock', () => {
+  it('keeps an InjectedBlock passed inside message data an InjectedBlock', () => {
     const messageData: MessageData = {
       role: 'user',
-      content: [new TextBlock('Refactor the tokenizer.'), new ContextBlock({ text: 'reminder' })],
+      content: [new TextBlock('Refactor the tokenizer.'), new InjectedBlock({ text: 'reminder' })],
     }
     const message = Message.fromMessageData(messageData)
-    expect(message.content).toEqual([new TextBlock('Refactor the tokenizer.'), new ContextBlock({ text: 'reminder' })])
+    expect(message.content).toEqual([new TextBlock('Refactor the tokenizer.'), new InjectedBlock({ text: 'reminder' })])
   })
 
   it('converts audio block data to AudioBlock', () => {
@@ -780,7 +780,7 @@ describe('toJSON/fromJSON round-trips', () => {
     ['ReasoningBlock with redactedContent',    () => new ReasoningBlock({ redactedContent: new Uint8Array([1, 2, 3]) })],
     ['CachePointBlock',                        () => new CachePointBlock({ cacheType: 'default' })],
     ['JsonBlock',                              () => new JsonBlock({ json: { key: 'value', nested: { a: 1 } } })],
-    ['ContextBlock',                           () => new ContextBlock({ text: 'reminder' })],
+    ['InjectedBlock',                          () => new InjectedBlock({ text: 'reminder' })],
     ['GuardContentBlock with text',            () => new GuardContentBlock({ text: { text: 'Guard this', qualifiers: ['guard_content'] } })],
     ['GuardContentBlock with image',           () => new GuardContentBlock({ image: { format: 'png', source: { bytes: new Uint8Array([1, 2, 3]) } } })],
     ['AudioBlock',                             () => new AudioBlock({ format: 'mp3', source: { bytes: new Uint8Array([1, 2, 3]) } })],
@@ -839,9 +839,9 @@ describe('toJSON format', () => {
     expect(block.toJSON()).toStrictEqual({ json: { test: true } })
   })
 
-  it('ContextBlock returns wrapped format', () => {
-    const block = new ContextBlock({ text: 'reminder' })
-    expect(block.toJSON()).toStrictEqual({ context: { text: 'reminder' } })
+  it('InjectedBlock returns wrapped format', () => {
+    const block = new InjectedBlock({ text: 'reminder' })
+    expect(block.toJSON()).toStrictEqual({ injected: { text: 'reminder' } })
   })
 
   it('ToolUseBlock omits undefined reasoningSignature', () => {

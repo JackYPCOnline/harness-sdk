@@ -13,7 +13,7 @@ import type { ModelStreamEvent } from './streaming.js'
  * added only when the call returns normally and the provider reported it; a thrown error
  * passes through and adds nothing.
  *
- * Blocks such as `ContextBlock` are converted here rather than in each provider, so
+ * Blocks such as `InjectedBlock` are converted here rather than in each provider, so
  * every provider, custom ones included, gets the same form, and the per-model rules planned
  * for later blocks have one place to live.
  *
@@ -27,7 +27,7 @@ export class ModelProxy {
   }
 
   /**
-   * Delegates to the wrapped model's `streamAggregated` with every `ContextBlock`
+   * Delegates to the wrapped model's `streamAggregated` with every `InjectedBlock`
    * sent as text, passing every event through unchanged, then adds the call's usage to
    * the request.
    *
@@ -41,7 +41,7 @@ export class ModelProxy {
     options?: StreamOptions,
     invocationContext?: InvocationContext
   ): AsyncGenerator<ModelStreamEvent | ContentBlock, StreamAggregatedResult, undefined> {
-    const result = yield* this._model.streamAggregated(renderContextBlocks(messages), options)
+    const result = yield* this._model.streamAggregated(renderInjectedBlocks(messages), options)
     this._record(result, invocationContext)
     return result
   }
@@ -57,32 +57,32 @@ export class ModelProxy {
 }
 
 /**
- * Returns the messages as the model receives them. A context block in a user message becomes a
- * text block in its place, and a context block in any other message is left out with a warning.
- * Messages without a context block are returned as they are, and the input is never changed.
+ * Returns the messages as the model receives them. An injected block in a user message becomes a
+ * text block in its place, and an injected block in any other message is left out with a warning.
+ * Messages without an injected block are returned as they are, and the input is never changed.
  *
- * Some providers join adjacent text blocks, so the context text is kept apart from the text
+ * Some providers join adjacent text blocks, so the injected text is kept apart from the text
  * around it. The separator always goes on the later of the two blocks: a block is sent the same
  * way however much content is added after it.
  *
  * @param messages - The messages of a model call
  * @returns The messages to send
  */
-function renderContextBlocks(messages: Message[]): Message[] {
-  if (!messages.some(hasContextBlock)) return messages
+function renderInjectedBlocks(messages: Message[]): Message[] {
+  if (!messages.some(hasInjectedBlock)) return messages
   return messages.map((message) => {
-    if (!hasContextBlock(message)) return message
+    if (!hasInjectedBlock(message)) return message
     const content: ContentBlock[] = []
     let previous: ContentBlock | undefined
     for (const block of message.content) {
-      if (block.type === 'contextBlock') {
+      if (block.type === 'injectedBlock') {
         if (message.role === 'user') {
           // The separator foldIntoLastUserMessage uses before injected text.
-          content.push(withSeparator(block.context.text, content.length > 0))
+          content.push(withSeparator(block.injected.text, content.length > 0))
         } else {
-          warnOnce(logger, `role=<${message.role}> | context block outside a user message | skipping it`)
+          warnOnce(logger, `role=<${message.role}> | injected block outside a user message | skipping it`)
         }
-      } else if (block.type === 'textBlock' && previous?.type === 'contextBlock' && message.role === 'user') {
+      } else if (block.type === 'textBlock' && previous?.type === 'injectedBlock' && message.role === 'user') {
         content.push(withSeparator(block.text, true))
       } else {
         content.push(block)
@@ -98,8 +98,8 @@ function renderContextBlocks(messages: Message[]): Message[] {
   })
 }
 
-function hasContextBlock(message: Message): boolean {
-  return message.content.some((block) => block.type === 'contextBlock')
+function hasInjectedBlock(message: Message): boolean {
+  return message.content.some((block) => block.type === 'injectedBlock')
 }
 
 /** A text block with `"\n\n"` in front of the text when something comes before it, unless it starts with a newline. */
