@@ -82,7 +82,7 @@ The following diagram shows when multi-agent hook events are emitted during orch
 </Tab>
 <Tab label="TypeScript">
 
-All events extend `HookableEvent`, making them both streamable via `agent.stream()` and subscribable via hook callbacks.
+All events extend `HookableEvent`, making them subscribable via hook callbacks. All but `MessageUpdatedEvent` are also streamable via `agent.stream()`.
 
 | Event                    | Description                                                                                                   |
 |--------------------------|---------------------------------------------------------------------------------------------------------------|

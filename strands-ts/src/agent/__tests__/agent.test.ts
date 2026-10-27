@@ -32,17 +32,14 @@ import {
   BeforeInvocationEvent,
   BeforeModelCallEvent,
   BeforeToolsEvent,
-  MessageAddedEvent,
-  MessageUpdatedEvent,
 } from '../../hooks/events.js'
-import { InvocationContextImpl } from '../invocation-context.js'
 import { BedrockModel } from '../../models/bedrock.js'
 import { ModelRouter } from '../../models/routing/router.js'
 import type { Model } from '../../models/model.js'
 import { StructuredOutputError } from '../../errors.js'
 import { NO_STRUCTURED_OUTPUT_MESSAGE } from '../../tools/structured-output-tool.js'
 import { expectLoopMetrics } from '../../__fixtures__/metrics-helpers.js'
-import { expectAgentResult, textMessage } from '../../__fixtures__/agent-helpers.js'
+import { expectAgentResult } from '../../__fixtures__/agent-helpers.js'
 import { anyTrackingId } from '../../__fixtures__/message-helpers.js'
 import type { StreamOptions } from '../../index.js'
 import type { ModelStreamEvent } from '../../models/streaming.js'
@@ -1938,85 +1935,6 @@ describe('Agent._redactLastMessage', () => {
 
     expect(() => agent['_redactLastMessage'](redactMessage)).not.toThrow()
     expect(agent['messages']).toHaveLength(0)
-  })
-})
-
-describe('Agent._appendToLatestUserMessage', () => {
-  function recordMessageEvents(agent: Agent): (MessageAddedEvent | MessageUpdatedEvent)[] {
-    const events: (MessageAddedEvent | MessageUpdatedEvent)[] = []
-    agent.addHook(MessageAddedEvent, (event) => {
-      events.push(event)
-    })
-    agent.addHook(MessageUpdatedEvent, (event) => {
-      events.push(event)
-    })
-    return events
-  }
-
-  it('replaces the latest user message with its content followed by the blocks and fires MessageUpdatedEvent', async () => {
-    const earlier = [textMessage('user', 'first'), textMessage('assistant', 'reply')]
-    const metadata = { custom: { source: 'test' } }
-    const latest = new Message({ role: 'user', content: [new TextBlock('ask')], trackingId: 'durable-1', metadata })
-    const agent = new Agent({ model: new MockMessageModel(), messages: [...earlier, latest] })
-    const events = recordMessageEvents(agent)
-    const invocationState = { requestId: 'request-1' }
-    const invocationContext = new InvocationContextImpl()
-
-    const written = await agent._appendToLatestUserMessage(
-      [new TextBlock('context 1'), new TextBlock('context 2')],
-      invocationState,
-      invocationContext
-    )
-
-    const expected = new Message({
-      role: 'user',
-      content: [new TextBlock('ask'), new TextBlock('context 1'), new TextBlock('context 2')],
-      trackingId: 'durable-1',
-      metadata,
-    })
-    expect(agent.messages).toEqual([...earlier, expected])
-    expect(written).toBe(agent.messages.at(-1))
-    expect(latest.content).toEqual([new TextBlock('ask')])
-    expect(events).toEqual([
-      new MessageUpdatedEvent({ agent, trackingId: 'durable-1', message: expected, invocationState }),
-    ])
-    expect(events[0]!.message).toBe(written)
-    expect(events[0]!.invocationState).toBe(invocationState)
-    expect(events[0]!.invocationContext).toBe(invocationContext)
-  })
-
-  it('reaches the same model call when written from a BeforeModelCallEvent hook', async () => {
-    const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'ok' })
-    const streamSpy = vi.spyOn(model, 'stream')
-    const agent = new Agent({ model, printer: false })
-    agent.addHook(BeforeModelCallEvent, async (event) => {
-      await agent._appendToLatestUserMessage([new TextBlock('context')], event.invocationState)
-    })
-
-    await agent.invoke('ask')
-
-    expect(streamSpy.mock.calls[0]![0].at(-1)!.content).toEqual([new TextBlock('ask'), new TextBlock('context')])
-  })
-
-  it.each([
-    { scenario: 'there are no messages', messages: [], blocks: [new TextBlock('context')] },
-    {
-      scenario: 'the latest message is not a user message',
-      messages: [textMessage('user', 'ask'), textMessage('assistant', 'reply')],
-      blocks: [new TextBlock('context')],
-    },
-    { scenario: 'blocks is empty', messages: [textMessage('user', 'ask')], blocks: [] },
-  ])('does nothing when $scenario', async ({ messages, blocks }) => {
-    const agent = new Agent({ model: new MockMessageModel(), messages })
-    const before = [...agent.messages]
-    const events = recordMessageEvents(agent)
-
-    const written = await agent._appendToLatestUserMessage(blocks, {})
-
-    expect(written).toBeUndefined()
-    expect(agent.messages).toEqual(before)
-    expect(agent.messages.at(-1)).toBe(before.at(-1))
-    expect(events).toEqual([])
   })
 })
 

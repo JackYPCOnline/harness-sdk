@@ -18,8 +18,9 @@ import type { InvocationContext } from '../agent/invocation-context.js'
  * (e.g. `cancel`, `retry`, `selectedTool`, `resume`, and mutable `toolUse` / `result`).
  *
  * All current events extend {@link HookableEvent} (which itself extends {@link StreamEvent}),
- * making them both streamable and subscribable via hook callbacks. {@link StreamEvent} exists
- * as the base class for potential future events that should be stream-only without hookability.
+ * making them subscribable via hook callbacks. All but {@link MessageUpdatedEvent}, which is
+ * hook-only, are also yielded by `agent.stream()`. {@link StreamEvent} exists as the base class
+ * for potential future events that should be stream-only without hookability.
  *
  * ## Event categories
  *
