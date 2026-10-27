@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { TestModelProvider } from '../../__fixtures__/model-test-helpers.js'
 import { Model } from '../../models/model.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../tools/structured-output-tool.js'
-import { Message, TextBlock } from '../../types/messages.js'
+import { ContextBlock, Message, TextBlock } from '../../types/messages.js'
 import { LLMDecisionModel } from '../llm-decision-model.js'
 import { Uncertain } from '../types.js'
 import type { StreamOptions } from '../../models/model.js'
@@ -205,6 +205,23 @@ describe('LLMDecisionModel', () => {
       await decision.ask(history, { q: { question: 'conversation?', choices: 'boolean' } })
 
       expect(model.requests[0]).toBe(history)
+    })
+
+    it('sends a context block in a message history as text', async () => {
+      const model = toolUseModel({ q: 'true' })
+      const decision = new LLMDecisionModel({ model })
+
+      await decision.ask(
+        [
+          new Message({
+            role: 'user',
+            content: [new TextBlock('the question'), new ContextBlock({ text: 'cwd: /repo' })],
+          }),
+        ],
+        { q: { question: 'conversation?', choices: 'boolean' } }
+      )
+
+      expect(model.requests[0]![0]!.content).toEqual([new TextBlock('the question'), new TextBlock('\n\ncwd: /repo')])
     })
 
     it('includes the untrusted-state defense in the system prompt', async () => {

@@ -290,7 +290,7 @@ describe('ContextBlock', () => {
 
     expect(block).toEqual({
       type: 'contextBlock',
-      text: 'reminder',
+      context: { text: 'reminder' },
     })
   })
 })
@@ -419,6 +419,15 @@ describe('Message.fromMessageData', () => {
     const messageData: MessageData = {
       role: 'user',
       content: [{ text: 'Refactor the tokenizer.' }, { context: { text: 'reminder' } }],
+    }
+    const message = Message.fromMessageData(messageData)
+    expect(message.content).toEqual([new TextBlock('Refactor the tokenizer.'), new ContextBlock({ text: 'reminder' })])
+  })
+
+  it('keeps a ContextBlock passed inside message data a ContextBlock', () => {
+    const messageData: MessageData = {
+      role: 'user',
+      content: [new TextBlock('Refactor the tokenizer.'), new ContextBlock({ text: 'reminder' })],
     }
     const message = Message.fromMessageData(messageData)
     expect(message.content).toEqual([new TextBlock('Refactor the tokenizer.'), new ContextBlock({ text: 'reminder' })])

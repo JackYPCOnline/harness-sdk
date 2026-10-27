@@ -13,6 +13,10 @@ import type { ModelStreamEvent } from './streaming.js'
  * added only when the call returns normally and the provider reported it; a thrown error
  * passes through and adds nothing.
  *
+ * Blocks such as `ContextBlock` are converted here rather than in each provider, so
+ * every provider, custom ones included, gets the same form, and the per-model rules planned
+ * for later blocks have one place to live.
+ *
  * @internal
  */
 export class ModelProxy {
@@ -23,7 +27,7 @@ export class ModelProxy {
   }
 
   /**
-   * Delegates to the wrapped model's `streamAggregated` with every {@link ContextBlock}
+   * Delegates to the wrapped model's `streamAggregated` with every `ContextBlock`
    * sent as text, passing every event through unchanged, then adds the call's usage to
    * the request.
    *
@@ -57,6 +61,10 @@ export class ModelProxy {
  * text block in its place, and a context block in any other message is left out with a warning.
  * Messages without a context block are returned as they are, and the input is never changed.
  *
+ * Some providers join adjacent text blocks, so the context text is kept apart from the text
+ * around it. The separator always goes on the later of the two blocks: a block is sent the same
+ * way however much content is added after it.
+ *
  * @param messages - The messages of a model call
  * @returns The messages to send
  */
@@ -65,17 +73,21 @@ function renderContextBlocks(messages: Message[]): Message[] {
   return messages.map((message) => {
     if (!hasContextBlock(message)) return message
     const content: ContentBlock[] = []
+    let previous: ContentBlock | undefined
     for (const block of message.content) {
-      if (block.type !== 'contextBlock') {
-        content.push(block)
-      } else if (message.role !== 'user') {
-        warnOnce(logger, `role=<${message.role}> | context block outside a user message | skipping it`)
+      if (block.type === 'contextBlock') {
+        if (message.role === 'user') {
+          // The separator foldIntoLastUserMessage uses before injected text.
+          content.push(withSeparator(block.context.text, content.length > 0))
+        } else {
+          warnOnce(logger, `role=<${message.role}> | context block outside a user message | skipping it`)
+        }
+      } else if (block.type === 'textBlock' && previous?.type === 'contextBlock' && message.role === 'user') {
+        content.push(withSeparator(block.text, true))
       } else {
-        // The separator foldIntoLastUserMessage uses: some providers join adjacent text blocks,
-        // which would run this text onto the content before it.
-        const separator = content.length > 0 && !block.text.startsWith('\n') ? '\n\n' : ''
-        content.push(new TextBlock(`${separator}${block.text}`))
+        content.push(block)
       }
+      previous = block
     }
     return new Message({
       role: message.role,
@@ -88,4 +100,9 @@ function renderContextBlocks(messages: Message[]): Message[] {
 
 function hasContextBlock(message: Message): boolean {
   return message.content.some((block) => block.type === 'contextBlock')
+}
+
+/** A text block with `"\n\n"` in front of the text when something comes before it, unless it starts with a newline. */
+function withSeparator(text: string, afterContent: boolean): TextBlock {
+  return new TextBlock(afterContent && !text.startsWith('\n') ? `\n\n${text}` : text)
 }

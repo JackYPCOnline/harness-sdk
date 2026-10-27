@@ -164,7 +164,7 @@ export type Role = 'user' | 'assistant'
 
 /**
  * A block of content within a message.
- * Content blocks can contain text, tool usage requests, tool results, reasoning content, cache points, guard content, or media (audio, image, video, document).
+ * Content blocks can contain text, tool usage requests, tool results, reasoning content, cache points, guard content, citations, context the app adds, or media (audio, image, video, document).
  *
  * This is a discriminated union where the object key determines the content format.
  *
@@ -996,8 +996,14 @@ export interface ContextBlockData {
 
 /**
  * Text the app adds to a user turn, such as a reminder or recalled memories, kept apart from the user's own words.
- * It belongs in a user message, after the existing content. The agent sends it to every model as plain text in
- * that message.
+ * Use it instead of a {@link TextBlock} when the text comes from the app, not the user. It belongs in a user
+ * message, after the existing content. In any other message it is left out, with a warning.
+ *
+ * The agent sends it to the model as plain text in that message. A direct call to a model, such as `model.stream()`,
+ * leaves it out.
+ *
+ * The text is kept under `context`, the same shape as the saved data, so a ContextBlock is never read as a
+ * {@link TextBlock}.
  *
  * @example
  * ```typescript
@@ -1007,19 +1013,19 @@ export interface ContextBlockData {
  * })
  * ```
  */
-export class ContextBlock implements ContextBlockData, JSONSerializable<{ context: ContextBlockData }> {
+export class ContextBlock implements JSONSerializable<{ context: ContextBlockData }> {
   /**
    * Discriminator for context content.
    */
   readonly type = 'contextBlock' as const
 
   /**
-   * Text the app adds to the user turn.
+   * The context data: the text the app adds to the user turn.
    */
-  readonly text: string
+  readonly context: ContextBlockData
 
   constructor(data: ContextBlockData) {
-    this.text = data.text
+    this.context = { text: data.text }
   }
 
   /**
@@ -1027,7 +1033,7 @@ export class ContextBlock implements ContextBlockData, JSONSerializable<{ contex
    * Called automatically by JSON.stringify().
    */
   toJSON(): { context: ContextBlockData } {
-    return { context: { text: this.text } }
+    return { context: { text: this.context.text } }
   }
 
   /**
