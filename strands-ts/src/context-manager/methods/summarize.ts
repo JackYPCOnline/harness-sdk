@@ -10,7 +10,6 @@ import type { Model } from '../../models/model.js'
 import { ModelProxy } from '../../models/model-proxy.js'
 import type { InvocationContext } from '../../agent/invocation-context.js'
 import {
-  ContextBlock,
   GuardContentBlock,
   JsonBlock,
   Message,
@@ -113,9 +112,6 @@ export async function summarizeContent(
  * through, other content is rendered as text or a placeholder, and the rest is left out.
  */
 function toSummarizerBlocks(block: ContentBlock | ToolResultContent): ContentBlock[] {
-  // Left out on purpose: it's the app's text, not the conversation, and the plugin that wrote it
-  // writes it again after the summary replaces it.
-  if (block instanceof ContextBlock) return []
   if (block instanceof TextBlock || block instanceof ImageBlock || block instanceof DocumentBlock) return [block]
   if (block instanceof JsonBlock) return [new TextBlock(JSON.stringify(block.json, null, 2))]
   if (block instanceof CitationsBlock) return block.content.map((content) => new TextBlock(content.text))

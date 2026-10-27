@@ -10,7 +10,6 @@ import { z } from 'zod'
 import { normalizeError } from '../errors.js'
 import { BedrockModel } from '../models/bedrock.js'
 import { Model } from '../models/model.js'
-import { ModelProxy } from '../models/model-proxy.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME, StructuredOutputTool } from '../tools/structured-output-tool.js'
 import { Message, TextBlock, type ContentBlock, type ToolUseBlock } from '../types/messages.js'
 import { DecisionModel, uncertaintyAllowed } from './decision-model.js'
@@ -94,7 +93,7 @@ export class LLMDecisionModel extends DecisionModel {
     const systemPrompt = buildSystemPrompt(this._systemPrompt)
 
     const startedAt = globalThis.performance.now()
-    const stream = new ModelProxy(this._model).streamAggregated(messages, {
+    const stream = this._model.streamAggregated(messages, {
       systemPrompt,
       toolSpecs: [tool.toolSpec],
       toolChoice: { tool: { name: tool.name } },

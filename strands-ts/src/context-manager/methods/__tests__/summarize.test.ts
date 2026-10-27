@@ -5,7 +5,6 @@ import { AudioBlock, ImageBlock, VideoBlock } from '../../../types/media.js'
 import { CitationsBlock } from '../../../types/citations.js'
 import {
   CachePointBlock,
-  ContextBlock,
   GuardContentBlock,
   JsonBlock,
   Message,
@@ -33,15 +32,6 @@ describe('flattenMessagesToContent', () => {
     ]
 
     expect(flattenMessagesToContent(messages)).toEqual([new TextBlock('\n---\n[user]'), new TextBlock('next')])
-  })
-
-  it('excludes context blocks', () => {
-    const messages = [
-      new Message({ role: 'user', content: [new TextBlock('fix it'), new ContextBlock({ text: 'cwd: /repo' })] }),
-      new Message({ role: 'user', content: [new ContextBlock({ text: 'reminder' })] }),
-    ]
-
-    expect(flattenMessagesToContent(messages)).toEqual([new TextBlock('\n---\n[user]'), new TextBlock('fix it')])
   })
 
   it('passes only text, images, and documents through and renders other blocks as text', () => {
