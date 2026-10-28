@@ -4,6 +4,7 @@ import { MockSnapshotStorage, createTestSnapshot } from '../../__fixtures__/mock
 import {
   InitializedEvent,
   MessageAddedEvent,
+  MessageUpdatedEvent,
   AfterInvocationEvent,
   AfterModelCallEvent,
   HookableEvent,
@@ -342,6 +343,24 @@ describe('SessionManager', () => {
       })
 
       await initPluginAndInvokeHook(sessionManager, new MessageAddedEvent(createMockMessageEvent(mockAgent)))
+
+      const snapshot = await storage.loadSnapshot({
+        location: { sessionId: 'test-session', scope: 'agent', scopeId: 'test-agent' },
+      })
+      expect(snapshot).not.toBeNull()
+    })
+
+    it('saves snapshot_latest on MessageUpdatedEvent when saveLatestOn is message', async () => {
+      sessionManager = new SessionManager({
+        sessionId: 'test-session',
+        storage: { snapshot: storage },
+        saveLatestOn: 'message',
+      })
+
+      await initPluginAndInvokeHook(
+        sessionManager,
+        new MessageUpdatedEvent({ ...createMockMessageEvent(mockAgent), trackingId: MOCK_MESSAGE.trackingId })
+      )
 
       const snapshot = await storage.loadSnapshot({
         location: { sessionId: 'test-session', scope: 'agent', scopeId: 'test-agent' },

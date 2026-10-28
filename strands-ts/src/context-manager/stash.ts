@@ -107,7 +107,7 @@ export class Stash {
 
   /**
    * Eagerly stash all content from a message on arrival.
-   * Called via MessageAddedEvent so content is persisted before any strategy runs.
+   * Called via MessageAddedEvent and MessageUpdatedEvent so content is persisted before any strategy runs.
    *
    * @param message - The message whose content should be persisted
    * @param skipToolUseIds - ToolUseIds to skip (e.g. retrieval tool results)

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { ContextManager } from '../context-manager.js'
 import { createMockAgent, invokeTrackedHook } from '../../__fixtures__/agent-helpers.js'
-import { AfterModelCallEvent, BeforeModelCallEvent } from '../../hooks/events.js'
+import { AfterModelCallEvent, BeforeModelCallEvent, MessageUpdatedEvent } from '../../hooks/events.js'
 import { ContextWindowOverflowError } from '../../errors.js'
 import { Message, TextBlock, ToolResultBlock, ToolUseBlock } from '../../types/messages.js'
 import type { Agent } from '../../agent/agent.js'
@@ -113,6 +113,24 @@ describe('ContextManager', () => {
       await cm.stash!.store('tool-1', 0, new TextEncoder().encode('{}'))
 
       expect(await storage.list('')).toStrictEqual(['tenant/context/test-ses/scopes/agent/test-agent/tool-1_0'])
+    })
+
+    it('stashes the blocks a MessageUpdatedEvent adds, so an offload marker can point at them', async () => {
+      const cm = new ContextManager()
+      const agent = makeMockAgent()
+      await cm.initAgent(agent)
+      const message = new Message({
+        role: 'user',
+        content: [new TextBlock('ask'), new TextBlock('added later')],
+        trackingId: 'msg-1',
+      })
+
+      await invokeTrackedHook(
+        agent,
+        new MessageUpdatedEvent({ agent, trackingId: 'msg-1', message, invocationState: {} })
+      )
+
+      expect(await cm.stash!.retrieve('msg-1_1')).toStrictEqual({ data: { text: 'added later' } })
     })
   })
 

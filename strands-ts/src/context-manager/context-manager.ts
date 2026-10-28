@@ -8,7 +8,7 @@ import type { Plugin } from '../plugins/plugin.js'
 import type { Tool } from '../tools/tool.js'
 import { createAuxiliaryInvocationContext, type InvocationContext } from '../agent/invocation-context.js'
 import type { LocalAgent } from '../types/agent.js'
-import { AfterModelCallEvent, BeforeModelCallEvent, MessageAddedEvent } from '../hooks/events.js'
+import { AfterModelCallEvent, BeforeModelCallEvent, MessageAddedEvent, MessageUpdatedEvent } from '../hooks/events.js'
 import { ContextWindowOverflowError } from '../errors.js'
 import { InMemoryStorage } from '../storage/in-memory-storage.js'
 import { EPHEMERAL } from '../storage/storage.js'
@@ -143,10 +143,13 @@ export class ContextManager implements Plugin {
         await stash.storeMessage(message, skipSet)
       }
 
-      agent.addHook(MessageAddedEvent, async (event) => {
+      // Re-stashing an updated message is safe: keys are per block, so its earlier blocks are rewritten unchanged.
+      const stashMessage = async (event: MessageAddedEvent | MessageUpdatedEvent): Promise<void> => {
         trackRetrievalToolUseIds(event.message, skipSet)
         await stash.storeMessage(event.message, skipSet)
-      })
+      }
+      agent.addHook(MessageAddedEvent, stashMessage)
+      agent.addHook(MessageUpdatedEvent, stashMessage)
     }
 
     for (const strategy of this._strategies) {

@@ -9,7 +9,13 @@ import type { JSONValue } from '../types/json.js'
 import type { Plugin } from '../plugins/plugin.js'
 import type { LocalAgent } from '../types/agent.js'
 import { Stash } from '../context-manager/stash.js'
-import { AfterInvocationEvent, AfterModelCallEvent, InitializedEvent, MessageAddedEvent } from '../hooks/events.js'
+import {
+  AfterInvocationEvent,
+  AfterModelCallEvent,
+  InitializedEvent,
+  MessageAddedEvent,
+  MessageUpdatedEvent,
+} from '../hooks/events.js'
 import { v7 as uuidV7 } from 'uuid'
 import { logger } from '../logging/logger.js'
 import type { MultiAgentPlugin, MultiAgent } from '../multiagent/index.js'
@@ -39,7 +45,7 @@ import type { Swarm } from '../multiagent/swarm.js'
  *
  * `SaveLatestStrategy` controls how frequently `snapshot_latest` is updated:
  * - `'invocation'`: after every agent invocation completes (default; balances durability and I/O)
- * - `'message'`: after every message added and when an invocation completes
+ * - `'message'`: after every message added or updated and when an invocation completes
  *   (most durable, highest I/O)
  * - `'trigger'`: only when a `snapshotTrigger` fires (or manually via `saveSnapshot`)
  *
@@ -187,7 +193,10 @@ export class SessionManager implements Plugin, MultiAgentPlugin {
     })
     if (this._saveLatestOn === 'message') {
       agent.addHook(MessageAddedEvent, async (event) => {
-        await this._onMessageAdded(event)
+        await this._onMessageChanged(event)
+      })
+      agent.addHook(MessageUpdatedEvent, async (event) => {
+        await this._onMessageChanged(event)
       })
     }
 
@@ -312,7 +321,7 @@ export class SessionManager implements Plugin, MultiAgentPlugin {
     }
   }
 
-  private async _onMessageAdded(event: MessageAddedEvent): Promise<void> {
+  private async _onMessageChanged(event: MessageAddedEvent | MessageUpdatedEvent): Promise<void> {
     await this.saveSnapshot({ target: event.agent, isLatest: true })
   }
 

@@ -35,7 +35,12 @@ import { ModelRouter } from '../models/routing/router.js'
 import type { BaseModelConfig, StreamAggregatedResult, StreamOptions } from '../models/model.js'
 import { ModelPlugin } from '../plugins/model-plugin.js'
 import { totalPromptTokens, isModelStreamEvent } from '../models/streaming.js'
-import { InvocationContextImpl, reachedLimit, resolveInvocationContext } from './invocation-context.js'
+import {
+  type InvocationContext,
+  InvocationContextImpl,
+  reachedLimit,
+  resolveInvocationContext,
+} from './invocation-context.js'
 import { ToolRegistry } from '../registry/tool-registry.js'
 import { StateStore } from '../state-store.js'
 import { serializeStateSerializable, loadStateSerializable } from '../types/serializable.js'
@@ -80,6 +85,7 @@ import {
   BeforeToolsEvent,
   HookableEvent,
   MessageAddedEvent,
+  MessageUpdatedEvent,
   ModelStreamUpdateEvent,
   ContentBlockEvent,
   ModelMessageEvent,
@@ -2786,6 +2792,50 @@ export class Agent implements LocalAgent, InvokableAgent {
   private async _appendMessageAndFireHooks(message: Message, invocationState: InvocationState = {}): Promise<void> {
     this.messages.push(message)
     await this._hooksRegistry.invokeCallbacks(new MessageAddedEvent({ agent: this, message, invocationState }))
+  }
+
+  /**
+   * Appends content blocks to the latest message when it is a user message, then fires
+   * {@link MessageUpdatedEvent} hooks.
+   *
+   * The latest message is replaced by a new {@link Message} holding its content followed by `blocks`,
+   * with the same `trackingId` and `metadata`. Only the latest message is written, so content the model
+   * has already answered never changes. Does nothing when there are no messages, the latest message is
+   * not a user message, or `blocks` is empty.
+   *
+   * @param blocks - Content blocks to append after the message's existing content
+   * @param invocationState - Per-invocation state carried on the event
+   * @param invocationContext - The request the write belongs to, if any
+   * @returns The replacement message, or `undefined` when nothing was written
+   * @internal For SDK plugins, which reach it by narrowing `LocalAgent` to `Agent`. Call it from a
+   *   {@link BeforeModelCallEvent} hook so the write reaches that model call. `InvokeModelStage` middleware
+   *   works on a copy of the messages made before it runs, so a write from there reaches only the next call.
+   */
+  async _appendToLatestUserMessage(
+    blocks: readonly ContentBlock[],
+    invocationState: InvocationState,
+    invocationContext?: InvocationContext
+  ): Promise<Message | undefined> {
+    const latest = this.messages.at(-1)
+    if (blocks.length === 0 || latest?.role !== 'user') return undefined
+
+    const message = new Message({
+      role: 'user',
+      content: [...latest.content, ...blocks],
+      trackingId: latest.trackingId,
+      ...(latest.metadata !== undefined && { metadata: latest.metadata }),
+    })
+    this.messages[this.messages.length - 1] = message
+    await this._hooksRegistry.invokeCallbacks(
+      new MessageUpdatedEvent({
+        agent: this,
+        invocationContext,
+        trackingId: message.trackingId,
+        message,
+        invocationState,
+      })
+    )
+    return message
   }
 
   /**
