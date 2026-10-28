@@ -77,7 +77,7 @@ function renderInjectedBlocks(messages: Message[]): Message[] {
     for (const block of message.content) {
       if (block.type === 'injectedBlock') {
         if (message.role === 'user') {
-          // The separator foldIntoLastUserMessage uses before injected text.
+          // Some providers join adjacent text blocks, which would run this onto the content before it.
           content.push(withSeparator(block.injected.text, content.length > 0))
         } else {
           warnOnce(logger, `role=<${message.role}> | injected block outside a user message | skipping it`)

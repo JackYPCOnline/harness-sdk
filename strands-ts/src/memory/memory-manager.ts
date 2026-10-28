@@ -20,9 +20,8 @@ import { tool } from '../tools/tool-factory.js'
 import { z } from 'zod'
 import { logger } from '../logging/logger.js'
 import { normalizeError } from '../errors.js'
-import { isUserTurn, createInjectionMiddleware } from '../injection/message-injection.js'
+import { isUserTurn, addInjection } from '../injection/message-injection.js'
 import { escapeXmlText, escapeXmlAttr } from '../injection/xml.js'
-import { InvokeModelStage } from '../middleware/index.js'
 import { Tracer } from '../telemetry/tracer.js'
 import { context, trace } from '@opentelemetry/api'
 
@@ -211,9 +210,9 @@ export class MemoryManager implements Plugin {
    * Wires up two independent behaviors:
    * - **Extraction**: for any store configured with {@link ExtractionConfig}, buffers conversation
    *   messages and attaches each store's triggers. A no-op when no store uses extraction.
-   * - **Injection**: when enabled, registers an `InvokeModelStage` middleware that folds retrieved
-   *   memory into the model input for each call without touching durable history. See
-   *   {@link _provideMemoryContext}, the `renderContent` callback the middleware invokes.
+   * - **Injection**: when enabled, writes retrieved memory into the latest user message before each
+   *   model call, as an `InjectedBlock`. See {@link _provideMemoryContext}, the `renderContent`
+   *   callback the injection invokes.
    *
    * @param agent - The agent this plugin is being attached to
    */
@@ -254,22 +253,18 @@ export class MemoryManager implements Plugin {
   }
 
   /**
-   * Registers the injection middleware when injection is enabled. Folds retrieved memory into the
-   * model input for each call via {@link _provideMemoryContext}, without touching durable history. A
-   * no-op when injection is disabled.
+   * Registers injection when it is enabled: retrieved memory from {@link _provideMemoryContext} is
+   * written into the latest user message before each model call. A no-op when injection is disabled.
    */
   private _initInjection(agent: LocalAgent): void {
     const config = this._injectionConfig
     if (config === false) {
       return
     }
-    agent.addMiddleware(
-      InvokeModelStage.Input,
-      createInjectionMiddleware({
-        ...(config.trigger !== undefined && { trigger: config.trigger }),
-        renderContent: (context) => this._provideMemoryContext(context.messages, config),
-      })
-    )
+    addInjection(agent, {
+      ...(config.trigger !== undefined && { trigger: config.trigger }),
+      renderContent: (context) => this._provideMemoryContext(context.messages, config),
+    })
   }
 
   /**

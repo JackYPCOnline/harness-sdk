@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { BeforeModelCallEvent } from '@strands-agents/sdk'
 import type { Agent, Plugin, ToolContext } from '@strands-agents/sdk'
 import type { InjectionContext } from '@strands-agents/sdk/vended-plugins/context-injector'
 
@@ -89,8 +90,8 @@ describe('Todos', () => {
 
   it('registers a context injector on initAgent', () => {
     const added: unknown[] = []
-    const stub = { addMiddleware: (_stage: unknown, handler: unknown) => added.push(handler) }
+    const stub = { addHook: (eventType: unknown) => added.push(eventType) }
     new Todos().initAgent(stub as unknown as LocalAgent)
-    expect(added).toHaveLength(1)
+    expect(added).toStrictEqual([BeforeModelCallEvent])
   })
 })

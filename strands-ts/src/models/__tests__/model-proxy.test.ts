@@ -5,7 +5,6 @@ import { type ModelStreamEvent } from '../streaming.js'
 import { InvocationContextImpl } from '../../agent/invocation-context.js'
 import { anyTrackingId } from '../../__fixtures__/message-helpers.js'
 import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
-import { foldIntoLastUserMessage } from '../../injection/message-injection.js'
 import { logger } from '../../logging/logger.js'
 import { warnOnce } from '../../logging/warn-once.js'
 import { InjectedBlock, Message, TextBlock, ToolResultBlock, type ContentBlock } from '../../types/messages.js'
@@ -126,25 +125,23 @@ describe('ModelProxy', () => {
     }
 
     it.each([
-      ['a prompt', [new TextBlock('Refactor the tokenizer.')], 'reminder'],
+      ['a prompt', [new TextBlock('Refactor the tokenizer.')], 'reminder', '\n\nreminder'],
       [
         'a tool result turn',
         [new ToolResultBlock({ toolUseId: 'tool-1', status: 'success', content: [new TextBlock('done')] })],
         'reminder',
+        '\n\nreminder',
       ],
-      ['an empty user message', [], 'reminder'],
-      ['text that starts with a newline', [new TextBlock('Refactor the tokenizer.')], '\nreminder'],
-    ])('sends the text the injectors fold in today, for %s', async (_name, content: ContentBlock[], text) => {
-      const { messages: folded } = foldIntoLastUserMessage(
-        [new Message({ role: 'user', content, trackingId: 'msg-1' })],
-        text
-      )
-
+      ['an empty user message', [], 'reminder', 'reminder'],
+      ['text that starts with a newline', [new TextBlock('Refactor the tokenizer.')], '\nreminder', '\nreminder'],
+    ])('sends the block as text in its place, for %s', async (_name, content: ContentBlock[], text, expected) => {
       const messages = [
         new Message({ role: 'user', content: [...content, new InjectedBlock({ text })], trackingId: 'msg-1' }),
       ]
 
-      expect(await sent(messages)).toEqual(folded)
+      expect(await sent(messages)).toEqual([
+        new Message({ role: 'user', content: [...content, new TextBlock(expected)], trackingId: 'msg-1' }),
+      ])
     })
 
     it('sends each of several injected blocks as its own text block, in place', async () => {

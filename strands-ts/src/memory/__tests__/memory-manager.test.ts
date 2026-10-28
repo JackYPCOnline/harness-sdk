@@ -6,12 +6,11 @@ import { tool } from '../../tools/tool-factory.js'
 import type { MemoryStore, MemoryEntry } from '../types.js'
 import type { InvokableTool, Tool } from '../../tools/tool.js'
 import { logger } from '../../logging/logger.js'
-import { Message, TextBlock, ToolUseBlock, ToolResultBlock } from '../../types/messages.js'
+import { InjectedBlock, Message, TextBlock, ToolUseBlock, ToolResultBlock } from '../../types/messages.js'
 import type { MessageData } from '../../types/messages.js'
-import { InvokeModelStage } from '../../middleware/index.js'
-import type { InvokeModelContext } from '../../middleware/index.js'
+import { BeforeModelCallEvent, MessageAddedEvent } from '../../hooks/events.js'
 import { createMockAgent } from '../../__fixtures__/agent-helpers.js'
-import { anyTrackingId } from '../../__fixtures__/message-helpers.js'
+import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 
 function createMockStore(
   name: string,
@@ -618,56 +617,39 @@ describe('MemoryManager', () => {
       await expect(mm.initAgent(createMockAgent())).resolves.not.toThrow()
     })
 
-    it('does not register injection middleware when injection is disabled', async () => {
+    it('registers no injection hook when injection is disabled', async () => {
       const mm = new MemoryManager({ stores: [createMockStore('test')], injection: false })
-      const addMiddleware = vi.fn()
-      await mm.initAgent(createMockAgent({ extra: { addMiddleware } as never }))
-      expect(addMiddleware).not.toHaveBeenCalled()
+      const agent = createMockAgent()
+      await mm.initAgent(agent)
+      expect(agent.trackedHooks.map((hook) => hook.eventType)).not.toContain(BeforeModelCallEvent)
     })
 
-    it('registers an InvokeModelStage input middleware when injection is enabled', async () => {
-      const mm = new MemoryManager({ stores: [createMockStore('test')], injection: true })
-      const addMiddleware = vi.fn()
-      await mm.initAgent(createMockAgent({ extra: { addMiddleware } as never }))
-
-      expect(addMiddleware).toHaveBeenCalledTimes(1)
-      expect(addMiddleware.mock.calls[0]![0]).toBe(InvokeModelStage.Input)
-      expect(typeof addMiddleware.mock.calls[0]![1]).toBe('function')
-    })
-
-    it('wires the registered middleware to the memory provide pipeline (folds a search hit)', async () => {
+    it('writes a search hit into the prompt as an InjectedBlock, kept out of extraction', async () => {
       const store = createMockStore('s', { entries: [{ content: 'dark mode preferred' }] })
       const mm = new MemoryManager({ stores: [store], injection: true })
-      const addMiddleware = vi.fn()
-      const agent = createMockAgent({ extra: { addMiddleware } as never })
-      await mm.initAgent(agent)
+      const agent = new Agent({
+        model: new MockMessageModel().addTurn({ type: 'textBlock', text: 'ok' }),
+        printer: false,
+        plugins: [mm],
+      })
+      const added: Message[] = []
+      agent.addHook(MessageAddedEvent, (event) => {
+        added.push(event.message)
+      })
 
-      const handler = addMiddleware.mock.calls[0]![1] as (ctx: InvokeModelContext) => Promise<InvokeModelContext>
-      const messages = [
-        new Message({ role: 'assistant', content: [new TextBlock('prior')] }),
-        new Message({ role: 'user', content: [new TextBlock('what is my plan')] }),
-      ]
-      const result = await handler({ messages, agent } as unknown as InvokeModelContext)
+      await agent.invoke('what is my plan')
 
-      expect(result.messages.map((m) => m.toJSON())).toStrictEqual([
-        { role: 'assistant', content: [{ text: 'prior' }], trackingId: anyTrackingId },
-        {
-          role: 'user',
-          content: [
-            { text: 'what is my plan' },
-            { text: '\n\n<memory>\n<entry source="s">dark mode preferred</entry>\n</memory>' },
-          ],
-          trackingId: anyTrackingId,
-        },
-      ])
+      const memory = new InjectedBlock({ text: '<memory>\n<entry source="s">dark mode preferred</entry>\n</memory>' })
+      expect(agent.messages[0]!.content).toStrictEqual([new TextBlock('what is my plan'), memory])
+      // MessageAddedEvent fired before the write, so extraction never records the injected memory.
+      expect(added[0]!.content).toStrictEqual([new TextBlock('what is my plan')])
       expect(store.search).toHaveBeenCalledWith('what is my plan', { maxSearchResults: 5 })
     })
   })
 
-  // The injection delivery (folding text into the model input) is wired through the InvokeModelStage
-  // input middleware (see the `initAgent` tests). The memory-owned `provide` pipeline below — query
-  // derivation, search, and formatting — is exercised directly via `_provideMemoryContext`, the
-  // callback the middleware invokes.
+  // The injection delivery (writing the text into the latest user message) is covered by the
+  // `initAgent` tests. The memory-owned `provide` pipeline below — query derivation, search, and
+  // formatting — is exercised directly via `_provideMemoryContext`, the callback the injection invokes.
   describe('injection', () => {
     const assistant = (text: string) => new Message({ role: 'assistant', content: [new TextBlock(text)] })
     const user = (text: string) => new Message({ role: 'user', content: [new TextBlock(text)] })

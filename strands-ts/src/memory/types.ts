@@ -219,8 +219,8 @@ export interface MemoryAddToolConfig extends MemoryToolConfig {
  *
  * When enabled on a {@link MemoryManager}, the manager searches memory before a model call and makes
  * the top results available to the model for that call, so relevant knowledge is present without the
- * model choosing to search. The injected text is ephemeral: it augments the model input for that call
- * only and never persists into the durable conversation or session.
+ * model choosing to search. The results are written into the latest user message as an `InjectedBlock`,
+ * which stays in the conversation and the session.
  *
  * Extends the generic {@link InjectionConfig} (which carries `trigger`) with the memory-owned knobs:
  * how many entries to retrieve, how to derive the query, and how to render the results.

@@ -11,6 +11,7 @@ import {
   ToolUseBlock,
   CachePointBlock,
   ReasoningBlock,
+  InjectedBlock,
 } from '../../../types/messages.js'
 import type { ContentBlock } from '../../../types/messages.js'
 import type { InvocationContext } from '../../../agent/invocation-context.js'
@@ -430,6 +431,8 @@ export abstract class BaseOffloadStrategy implements ContextStrategy {
     if (block instanceof ToolUseBlock) return false
     if (block instanceof CachePointBlock) return false
     if (block instanceof ReasoningBlock) return false
+    // Its writer would write it again once it is gone, so offloading it only adds copies.
+    if (block instanceof InjectedBlock) return false
     if (block instanceof TextBlock) return targetMatchesMessage(this._target, message)
     if (block instanceof ToolResultBlock) {
       if (this._stash && toolNameMap.get(block.toolUseId) === RETRIEVAL_TOOL_NAME) return false

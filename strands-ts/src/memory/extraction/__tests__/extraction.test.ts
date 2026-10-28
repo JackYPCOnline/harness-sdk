@@ -699,7 +699,7 @@ describe('MemoryManager extraction', () => {
 
     it('does not register hooks when no store has extraction', async () => {
       const store: MemoryStore = { name: 's', writable: true, search: vi.fn(), add: vi.fn() }
-      const mm = new MemoryManager({ stores: [store] })
+      const mm = new MemoryManager({ stores: [store], injection: false })
       const agent = createMockAgent()
       await mm.initAgent(agent)
       expect(agent.trackedHooks).toHaveLength(0)

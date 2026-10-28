@@ -44,22 +44,22 @@ export interface InjectionConfig {
 }
 
 /**
- * Options for {@link createInjectionMiddleware}.
+ * Options for `addInjection`.
  *
  * The engine is text-in: it knows nothing about queries, search, or rendering. A consumer supplies a
- * single {@link InjectionMiddlewareOptions.renderContent} callback that returns the text to fold into
- * the conversation, and (optionally) a trigger that gates when to do so.
+ * single {@link InjectionOptions.renderContent} callback that returns the text to write into the
+ * conversation, and (optionally) a trigger that gates when to do so.
  *
  * @internal Engine options. Consumers configure injection via `ContextInjectorConfig` or
  * `MemoryInjectionConfig`, not this type.
  */
-export interface InjectionMiddlewareOptions {
+export interface InjectionOptions {
   /**
    * When to inject. See {@link InjectionConfig.trigger}. Defaults to `'userTurn'`.
    */
   trigger?: InjectionTrigger | ((context: InjectionContext) => boolean)
   /**
-   * Returns the text to fold into the latest user message, or `undefined`/`''` to skip this call. A
+   * Returns the text to write into the latest user message, or `undefined`/`''` to skip this call. A
    * callback that throws fails open (injection is skipped, the model call proceeds).
    */
   renderContent: (context: InjectionContext) => Promise<string | undefined>

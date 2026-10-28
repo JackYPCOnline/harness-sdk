@@ -1,7 +1,6 @@
 import type { Plugin } from '../../plugins/plugin.js'
 import type { LocalAgent } from '../../types/agent.js'
-import { InvokeModelStage } from '../../middleware/index.js'
-import { createInjectionMiddleware } from '../../injection/message-injection.js'
+import { addInjection } from '../../injection/message-injection.js'
 import type { InjectionTrigger, InjectionContext } from '../../injection/types.js'
 
 /** Configuration for the {@link ContextInjector} plugin. */
@@ -30,10 +29,11 @@ export interface ContextInjectorConfig {
 /**
  * Plugin that injects just-in-time context into the model input before each call.
  *
- * Before each model call, the plugin asks {@link ContextInjectorConfig.renderContent} for text and
- * makes it available to the model for that call, gated by {@link ContextInjectorConfig.trigger}. The
- * injected text is ephemeral: it augments the model input for that one call and never persists into the
- * durable conversation or session.
+ * Before each model call, the plugin asks {@link ContextInjectorConfig.renderContent} for text, gated by
+ * {@link ContextInjectorConfig.trigger}, and writes it into the latest user message as an `InjectedBlock`.
+ * The block stays in the conversation and the session, so earlier messages are sent the same way on every
+ * later call. The same text is written once; new text adds a new block, so prefer text that changes only
+ * when its content does.
  *
  * @example
  * ```typescript
@@ -42,7 +42,7 @@ export interface ContextInjectorConfig {
  *
  * const agent = new Agent({
  *   model,
- *   plugins: [new ContextInjector({ renderContent: async () => `<now>${new Date().toISOString()}</now>` })],
+ *   plugins: [new ContextInjector({ renderContent: async () => `<today>${new Date().toDateString()}</today>` })],
  * })
  * ```
  *
@@ -62,12 +62,9 @@ export class ContextInjector implements Plugin {
 
   initAgent(agent: LocalAgent): void {
     const config = this._config
-    agent.addMiddleware(
-      InvokeModelStage.Input,
-      createInjectionMiddleware({
-        ...(config.trigger !== undefined && { trigger: config.trigger }),
-        renderContent: config.renderContent,
-      })
-    )
+    addInjection(agent, {
+      ...(config.trigger !== undefined && { trigger: config.trigger }),
+      renderContent: config.renderContent,
+    })
   }
 }

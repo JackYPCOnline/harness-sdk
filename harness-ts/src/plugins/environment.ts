@@ -1,12 +1,13 @@
 /**
  * EnvironmentContext: surface the working environment and project docs to the model.
  *
- * Before each user turn an internal `ContextInjector` re-surfaces a small block: the platform and
- * current date (the date is why this is injected rather than baked into the system prompt — a value
- * that changes each turn would bust the cached system-prompt prefix, whereas an ephemeral injection
- * lands after it and leaves the cache warm), the working directory, the contents of the project's
+ * On a user turn an internal `ContextInjector` writes a small block into the conversation: the platform
+ * and current date (the date is why this is injected rather than baked into the system prompt — a value
+ * that changes would bust the cached system-prompt prefix, whereas an injection lands in the user turn
+ * and leaves the system prompt unchanged), the working directory, the contents of the project's
  * `AGENTS.md`, and links to other `AGENTS.md` / `README.md` files found a couple of levels down
- * (links, not contents, so the block stays small — the agent reads them on demand).
+ * (links, not contents, so the block stays small — the agent reads them on demand). The block stays in
+ * history and is written again only when its text changes, for example on a new date.
  *
  * Everything is read through the agent's `sandbox` seam (the same one the file tools use), so it
  * works against a local, Docker, or SSH sandbox. Discovery (the directory walk and cwd) is done once
@@ -55,7 +56,7 @@ export interface EnvironmentContextConfig {
 }
 
 /**
- * Injects working-environment and project-doc context before each user turn.
+ * Injects working-environment and project-doc context on user turns, whenever it changes.
  *
  * Reads through the agent's `sandbox`, so it honors whatever sandbox the agent runs against. Sharing
  * one instance across agents is safe: the captured agent and memoized discovery are scoped per

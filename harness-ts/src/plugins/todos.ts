@@ -2,14 +2,12 @@
  * Todos: a structured task list the agent maintains for multi-step work.
  *
  * A single `todo_write` tool writes the current list to agent state; an internal
- * `ContextInjector` re-surfaces that list to the model before each call so it keeps the plan in
- * view without the list ever entering durable history.
+ * `ContextInjector` writes the list into the conversation whenever it changes, so the model keeps
+ * the plan in view.
  *
- * Re-surfacing goes through `ContextInjector` rather than editing `agent.messages` from a hook.
- * The list changes on every `todo_write` call, so a durable edit would either stack stale
- * reminders in history or force a remove-then-reappend dance; injection is ephemeral by
- * construction (it augments one model call and never persists), which is exactly what a
- * constantly-changing task list wants. It also happens to be symmetric across both SDKs.
+ * Each revision is written once, into the latest user message, and stays in history like any
+ * other content. Earlier requests are never edited, which keeps prompt caching and preserved
+ * thinking valid, at the cost of one copy of the list per revision.
  *
  * The injector fires on `everyTurn`, not `userTurn`: the agent updates the list mid-loop via
  * `todo_write`, so it should see the refreshed list on the next model call within the same
@@ -51,9 +49,9 @@ export interface TodosConfig {
 /**
  * Gives the agent a `todo_write` tool and keeps the current list in view.
  *
- * The tool persists the list to `agent.appState` under `stateKey`; before each model call the
- * plugin re-surfaces the list as a `<system-reminder>` (ephemeral, never written to durable
- * history). Sharing one instance across agents is safe: state is per-agent.
+ * The tool persists the list to `agent.appState` under `stateKey`; whenever the list changes, the
+ * plugin writes it into the conversation as a `<system-reminder>`. Sharing one instance across agents
+ * is safe: state is per-agent.
  */
 export class Todos implements Plugin {
   readonly name: string
@@ -80,8 +78,8 @@ export class Todos implements Plugin {
         description:
           'Create and maintain a structured task list for the current session. Use proactively for ' +
           'multi-step work (roughly 3+ distinct steps). Keep exactly one item in_progress at a time, ' +
-          'and update status as you go rather than batching. The current list is re-surfaced to you ' +
-          'before each step, so you do not need to restate it. Pass an empty list to clear it when the ' +
+          'and update status as you go rather than batching. The current list is shown to you whenever ' +
+          'it changes, so you do not need to restate it. Pass an empty list to clear it when the ' +
           'work is done.',
         inputSchema: z.object({
           todos: z.array(todoItemSchema).describe('The full updated list.'),
