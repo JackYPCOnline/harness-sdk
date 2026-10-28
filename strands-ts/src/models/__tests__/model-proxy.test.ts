@@ -1,11 +1,19 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { ModelProxy } from '../model-proxy.js'
 import type { StreamAggregatedResult } from '../model.js'
 import { type ModelStreamEvent } from '../streaming.js'
 import { InvocationContextImpl } from '../../agent/invocation-context.js'
 import { anyTrackingId } from '../../__fixtures__/message-helpers.js'
 import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
-import { Message, TextBlock, type ContentBlock } from '../../types/messages.js'
+import { foldIntoLastUserMessage } from '../../injection/message-injection.js'
+import { logger } from '../../logging/logger.js'
+import { warnOnce } from '../../logging/warn-once.js'
+import { InjectedBlock, Message, TextBlock, ToolResultBlock, type ContentBlock } from '../../types/messages.js'
+
+// warnOnce logs each message once per process, so a real call can't be asserted in more than one test.
+vi.mock('../../logging/warn-once.js', () => ({
+  warnOnce: vi.fn(),
+}))
 
 function userMessage(text: string): Message {
   return new Message({ role: 'user', content: [new TextBlock(text)] })
@@ -105,6 +113,161 @@ describe('ModelProxy', () => {
         ...direct.result,
         message: { ...direct.result.message, trackingId: anyTrackingId },
       })
+    })
+  })
+
+  describe('injected blocks', () => {
+    /** Sends the messages through the proxy and returns the messages the model received. */
+    async function sent(messages: Message[]): Promise<Message[]> {
+      const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'ok' })
+      const streamSpy = vi.spyOn(model, 'stream')
+      await drain(new ModelProxy(model).streamAggregated(messages))
+      return streamSpy.mock.calls[0]![0]
+    }
+
+    it.each([
+      ['a prompt', [new TextBlock('Refactor the tokenizer.')], 'reminder'],
+      [
+        'a tool result turn',
+        [new ToolResultBlock({ toolUseId: 'tool-1', status: 'success', content: [new TextBlock('done')] })],
+        'reminder',
+      ],
+      ['an empty user message', [], 'reminder'],
+      ['text that starts with a newline', [new TextBlock('Refactor the tokenizer.')], '\nreminder'],
+    ])('sends the text the injectors fold in today, for %s', async (_name, content: ContentBlock[], text) => {
+      const { messages: folded } = foldIntoLastUserMessage(
+        [new Message({ role: 'user', content, trackingId: 'msg-1' })],
+        text
+      )
+
+      const messages = [
+        new Message({ role: 'user', content: [...content, new InjectedBlock({ text })], trackingId: 'msg-1' }),
+      ]
+
+      expect(await sent(messages)).toEqual(folded)
+    })
+
+    it('sends each of several injected blocks as its own text block, in place', async () => {
+      const messages = [
+        new Message({
+          role: 'user',
+          content: [
+            new TextBlock('Refactor the tokenizer.'),
+            new InjectedBlock({ text: 'one' }),
+            new InjectedBlock({ text: 'two' }),
+          ],
+          trackingId: 'msg-1',
+          metadata: { custom: { source: 'test' } },
+        }),
+      ]
+
+      expect(await sent(messages)).toEqual([
+        new Message({
+          role: 'user',
+          content: [new TextBlock('Refactor the tokenizer.'), new TextBlock('\n\none'), new TextBlock('\n\ntwo')],
+          trackingId: 'msg-1',
+          metadata: { custom: { source: 'test' } },
+        }),
+      ])
+    })
+
+    it('separates text that follows an injected block, without changing how the block is sent', async () => {
+      const messages = [
+        new Message({
+          role: 'user',
+          content: [
+            new TextBlock('Refactor.'),
+            new InjectedBlock({ text: 'reminder' }),
+            new TextBlock('Also the docs.'),
+          ],
+          trackingId: 'msg-1',
+        }),
+        new Message({
+          role: 'user',
+          content: [new InjectedBlock({ text: 'first' }), new TextBlock('Then the docs.')],
+          trackingId: 'msg-2',
+        }),
+      ]
+
+      expect(await sent(messages)).toEqual([
+        new Message({
+          role: 'user',
+          content: [new TextBlock('Refactor.'), new TextBlock('\n\nreminder'), new TextBlock('\n\nAlso the docs.')],
+          trackingId: 'msg-1',
+        }),
+        new Message({
+          role: 'user',
+          content: [new TextBlock('first'), new TextBlock('\n\nThen the docs.')],
+          trackingId: 'msg-2',
+        }),
+      ])
+    })
+
+    it('sends an injected block in an earlier user message too', async () => {
+      const answer = new Message({ role: 'assistant', content: [new TextBlock('Done.')], trackingId: 'msg-2' })
+      const latest = userMessage('Now the docs.')
+      const messages = [
+        new Message({
+          role: 'user',
+          content: [new TextBlock('Refactor.'), new InjectedBlock({ text: 'reminder' })],
+          trackingId: 'msg-1',
+        }),
+        answer,
+        latest,
+      ]
+
+      expect(await sent(messages)).toEqual([
+        new Message({
+          role: 'user',
+          content: [new TextBlock('Refactor.'), new TextBlock('\n\nreminder')],
+          trackingId: 'msg-1',
+        }),
+        answer,
+        latest,
+      ])
+    })
+
+    it('leaves out an injected block outside a user message, with a warning', async () => {
+      vi.mocked(warnOnce).mockClear()
+      const prompt = userMessage('go')
+      const messages = [
+        prompt,
+        new Message({
+          role: 'assistant',
+          content: [new TextBlock('Hi'), new InjectedBlock({ text: 'reminder' }), new TextBlock('Bye')],
+          trackingId: 'msg-2',
+        }),
+      ]
+
+      expect(await sent(messages)).toEqual([
+        prompt,
+        new Message({ role: 'assistant', content: [new TextBlock('Hi'), new TextBlock('Bye')], trackingId: 'msg-2' }),
+      ])
+      expect(vi.mocked(warnOnce).mock.calls).toEqual([
+        [logger, 'role=<assistant> | injected block outside a user message | skipping it'],
+      ])
+    })
+
+    it('does not change the messages it was given', async () => {
+      const messages = [
+        new Message({
+          role: 'user',
+          content: [new TextBlock('Refactor the tokenizer.'), new InjectedBlock({ text: 'reminder' })],
+        }),
+      ]
+
+      await sent(messages)
+
+      expect(messages[0]!.content).toEqual([
+        new TextBlock('Refactor the tokenizer.'),
+        new InjectedBlock({ text: 'reminder' }),
+      ])
+    })
+
+    it('passes messages without an injected block through as they are', async () => {
+      const messages = [userMessage('go')]
+
+      expect(await sent(messages)).toBe(messages)
     })
   })
 })

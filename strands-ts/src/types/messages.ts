@@ -164,7 +164,7 @@ export type Role = 'user' | 'assistant'
 
 /**
  * A block of content within a message.
- * Content blocks can contain text, tool usage requests, tool results, reasoning content, cache points, guard content, or media (audio, image, video, document).
+ * Content blocks can contain text, tool usage requests, tool results, reasoning content, cache points, guard content, citations, text the app injects, or media (audio, image, video, document).
  *
  * This is a discriminated union where the object key determines the content format.
  *
@@ -187,6 +187,7 @@ export type ContentBlockData =
   | { video: VideoBlockData }
   | { document: DocumentBlockData }
   | { citations: CitationsBlockData }
+  | { injected: InjectedBlockData }
 
 export type ContentBlock =
   | TextBlock
@@ -200,6 +201,7 @@ export type ContentBlock =
   | VideoBlock
   | DocumentBlock
   | CitationsBlock
+  | InjectedBlock
 
 /**
  * Data for a text block.
@@ -983,8 +985,72 @@ export class GuardContentBlock
 }
 
 /**
+ * Data for an injected block.
+ */
+export interface InjectedBlockData {
+  /**
+   * Text the app adds to the user turn.
+   */
+  text: string
+}
+
+/**
+ * Text the app adds to a user turn, such as a reminder or recalled memories, kept apart from the user's own words.
+ * Use it instead of a {@link TextBlock} when the text comes from the app, not the user. It belongs in a user
+ * message, after the existing content. In any other message it is left out, with a warning.
+ *
+ * It stays in the message like any other content, so every later request sends that message the same way.
+ * The agent sends it to the model as plain text in that message. A direct call to a model, such as `model.stream()`,
+ * leaves it out.
+ *
+ * The text is kept under `injected`, the same shape as the saved data, so an InjectedBlock is never read as a
+ * {@link TextBlock}.
+ *
+ * @example
+ * ```typescript
+ * const message = new Message({
+ *   role: 'user',
+ *   content: [new TextBlock('Refactor the tokenizer.'), new InjectedBlock({ text: 'cwd: /repo' })],
+ * })
+ * ```
+ */
+export class InjectedBlock implements JSONSerializable<{ injected: InjectedBlockData }> {
+  /**
+   * Discriminator for injected content.
+   */
+  readonly type = 'injectedBlock' as const
+
+  /**
+   * The injected data: the text the app adds to the user turn.
+   */
+  readonly injected: InjectedBlockData
+
+  constructor(data: InjectedBlockData) {
+    this.injected = { text: data.text }
+  }
+
+  /**
+   * Serializes the InjectedBlock to a JSON-compatible ContentBlockData object.
+   * Called automatically by JSON.stringify().
+   */
+  toJSON(): { injected: InjectedBlockData } {
+    return { injected: { text: this.injected.text } }
+  }
+
+  /**
+   * Creates an InjectedBlock instance from its wrapped data format.
+   *
+   * @param data - Wrapped InjectedBlockData to deserialize
+   * @returns InjectedBlock instance
+   */
+  static fromJSON(data: { injected: InjectedBlockData }): InjectedBlock {
+    return new InjectedBlock(data.injected)
+  }
+}
+
+/**
  * Converts ContentBlockData to a ContentBlock instance.
- * Handles all content block types including text, tool use/result, reasoning, cache points, guard content, and media blocks.
+ * Handles all content block types including text, tool use/result, reasoning, cache points, guard content, injected, and media blocks.
  *
  * @param data - The content block data to convert
  * @returns A ContentBlock instance of the appropriate type
@@ -1013,6 +1079,8 @@ export function contentBlockFromData(data: ContentBlockData): ContentBlock {
     return DocumentBlock.fromJSON(data)
   } else if ('citations' in data) {
     return CitationsBlock.fromJSON(data)
+  } else if ('injected' in data) {
+    return InjectedBlock.fromJSON(data)
   } else {
     throw new Error('Unknown ContentBlockData type')
   }
