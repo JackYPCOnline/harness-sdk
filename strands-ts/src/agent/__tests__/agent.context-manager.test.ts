@@ -152,24 +152,7 @@ describe('Agent contextManager', () => {
       expect(getToolsCalls).toBe(1)
     })
 
-    it('deduplicates the same tool required by multiple strategies', async () => {
-      const sharedTool = createRandomTool('shared-tool')
-      const strategy = (name: string): ContextStrategy => ({
-        name,
-        getTools: () => [sharedTool],
-        apply: async () => false,
-      })
-      const agent = new Agent({
-        model: new MockMessageModel(),
-        contextManager: { strategies: [strategy('first'), strategy('second')], stash: false },
-      })
-
-      await agent.initialize()
-
-      expect(agent.toolRegistry.list()).toEqual([sharedTool])
-    })
-
-    it('rejects conflicting strategy tools with the same name', async () => {
+    it('rejects strategy tools with the same name', async () => {
       const strategy = (name: string): ContextStrategy => ({
         name,
         getTools: () => [createRandomTool('shared-name')],
@@ -180,9 +163,7 @@ describe('Agent contextManager', () => {
         contextManager: { strategies: [strategy('first'), strategy('second')], stash: false },
       })
 
-      await expect(agent.initialize()).rejects.toThrow(
-        'tool_name=<shared-name> | context manager components provided conflicting tools'
-      )
+      await expect(agent.initialize()).rejects.toThrow("Tool with name 'shared-name' already registered")
     })
   })
 

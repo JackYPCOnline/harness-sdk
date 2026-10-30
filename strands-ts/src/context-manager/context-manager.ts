@@ -150,7 +150,7 @@ export class ContextManager implements Plugin {
 
     const retrievalTools = this._enableRetrievalTool && this._stash ? [createRetrievalTool(this._stash)] : []
     const strategyTools = this._strategies.flatMap((strategy) => strategy.getTools?.() ?? [])
-    this._tools = uniqueTools([...retrievalTools, ...strategyTools])
+    this._tools = [...retrievalTools, ...strategyTools]
 
     agent.addHook(BeforeModelCallEvent, async (event) => {
       await this._runStrategies(event.agent, event.projectedInputTokens, undefined, event.invocationContext)
@@ -237,17 +237,4 @@ export class ContextManager implements Plugin {
     }
     return anyActed
   }
-}
-
-/** Keep one instance of each tool and reject ambiguous same-name definitions. */
-function uniqueTools(tools: Tool[]): Tool[] {
-  const toolsByName = new Map<string, Tool>()
-  for (const tool of tools) {
-    const existing = toolsByName.get(tool.name)
-    if (existing && existing !== tool) {
-      throw new Error(`tool_name=<${tool.name}> | context manager components provided conflicting tools`)
-    }
-    toolsByName.set(tool.name, tool)
-  }
-  return [...toolsByName.values()]
 }
