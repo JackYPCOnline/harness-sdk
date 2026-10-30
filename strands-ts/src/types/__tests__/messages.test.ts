@@ -8,7 +8,6 @@ import {
   CachePointBlock,
   GuardContentBlock,
   JsonBlock,
-  InjectedBlock,
   generateTrackingId,
   type MessageData,
   type SystemPromptData,
@@ -178,6 +177,35 @@ describe('TextBlock', () => {
       type: 'textBlock',
       text: 'hello',
     })
+    expect(block.toJSON()).toEqual({ text: 'hello' })
+  })
+
+  test('carries metadata and serializes it beside the text', () => {
+    const block = new TextBlock('cwd: /repo', { metadata: { injected: { source: 'strands:context-injector' } } })
+
+    expect(block).toEqual({
+      type: 'textBlock',
+      text: 'cwd: /repo',
+      metadata: { injected: { source: 'strands:context-injector' } },
+    })
+    expect(block.toJSON()).toEqual({
+      text: 'cwd: /repo',
+      metadata: { injected: { source: 'strands:context-injector' } },
+    })
+    expect(TextBlock.fromJSON(block.toJSON())).toEqual(block)
+  })
+
+  test('keeps metadata through message data and clone, at top level and inside a tool result', () => {
+    const injected = new TextBlock('recalled: likes tea', {
+      metadata: { injected: { source: 'strands:memory-manager' } },
+    })
+    const message = new Message({
+      role: 'user',
+      content: [injected, new ToolResultBlock({ toolUseId: 'tu-1', status: 'success', content: [injected] })],
+    })
+
+    expect(Message.fromMessageData(message.toJSON())).toEqual(message)
+    expect(message.clone()).toEqual(message)
   })
 })
 
@@ -280,17 +308,6 @@ describe('JsonBlock', () => {
     expect(block).toEqual({
       type: 'jsonBlock',
       json: { key: 'value' },
-    })
-  })
-})
-
-describe('InjectedBlock', () => {
-  test('creates injected block with text', () => {
-    const block = new InjectedBlock({ text: 'reminder' })
-
-    expect(block).toEqual({
-      type: 'injectedBlock',
-      injected: { text: 'reminder' },
     })
   })
 })
@@ -413,24 +430,6 @@ describe('Message.fromMessageData', () => {
     const message = Message.fromMessageData(messageData)
     expect(message.content).toHaveLength(1)
     expect(message.content[0]!.type).toBe('guardContentBlock')
-  })
-
-  it('converts injected block data to InjectedBlock', () => {
-    const messageData: MessageData = {
-      role: 'user',
-      content: [{ text: 'Refactor the tokenizer.' }, { injected: { text: 'reminder' } }],
-    }
-    const message = Message.fromMessageData(messageData)
-    expect(message.content).toEqual([new TextBlock('Refactor the tokenizer.'), new InjectedBlock({ text: 'reminder' })])
-  })
-
-  it('keeps an InjectedBlock passed inside message data an InjectedBlock', () => {
-    const messageData: MessageData = {
-      role: 'user',
-      content: [new TextBlock('Refactor the tokenizer.'), new InjectedBlock({ text: 'reminder' })],
-    }
-    const message = Message.fromMessageData(messageData)
-    expect(message.content).toEqual([new TextBlock('Refactor the tokenizer.'), new InjectedBlock({ text: 'reminder' })])
   })
 
   it('converts audio block data to AudioBlock', () => {
@@ -780,7 +779,6 @@ describe('toJSON/fromJSON round-trips', () => {
     ['ReasoningBlock with redactedContent',    () => new ReasoningBlock({ redactedContent: new Uint8Array([1, 2, 3]) })],
     ['CachePointBlock',                        () => new CachePointBlock({ cacheType: 'default' })],
     ['JsonBlock',                              () => new JsonBlock({ json: { key: 'value', nested: { a: 1 } } })],
-    ['InjectedBlock',                          () => new InjectedBlock({ text: 'reminder' })],
     ['GuardContentBlock with text',            () => new GuardContentBlock({ text: { text: 'Guard this', qualifiers: ['guard_content'] } })],
     ['GuardContentBlock with image',           () => new GuardContentBlock({ image: { format: 'png', source: { bytes: new Uint8Array([1, 2, 3]) } } })],
     ['AudioBlock',                             () => new AudioBlock({ format: 'mp3', source: { bytes: new Uint8Array([1, 2, 3]) } })],
@@ -837,11 +835,6 @@ describe('toJSON format', () => {
   it('JsonBlock returns unwrapped format', () => {
     const block = new JsonBlock({ json: { test: true } })
     expect(block.toJSON()).toStrictEqual({ json: { test: true } })
-  })
-
-  it('InjectedBlock returns wrapped format', () => {
-    const block = new InjectedBlock({ text: 'reminder' })
-    expect(block.toJSON()).toStrictEqual({ injected: { text: 'reminder' } })
   })
 
   it('ToolUseBlock omits undefined reasoningSignature', () => {

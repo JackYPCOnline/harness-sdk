@@ -6,7 +6,6 @@ import {
   ToolResultBlock,
   ReasoningBlock,
   GuardContentBlock,
-  InjectedBlock,
 } from '../../types/messages.js'
 import { CitationsBlock } from '../../types/citations.js'
 import { TestModelProvider, collectGenerator } from '../../__fixtures__/model-test-helpers.js'
@@ -1115,15 +1114,6 @@ describe('countTokens', () => {
     const result = await provider.countTokens(messages)
 
     expect(result).toBe(Math.ceil('cited text here'.length / 4))
-  })
-
-  it('estimates injected block tokens', async () => {
-    const provider = new TestModelProvider()
-    const messages = [new Message({ role: 'user', content: [new InjectedBlock({ text: 'cwd: /repo, date: today' })] })]
-
-    const result = await provider.countTokens(messages)
-
-    expect(result).toBe(Math.ceil('cwd: /repo, date: today'.length / 4))
   })
 
   it('estimates string system prompt tokens', async () => {
